@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="es">
+
+<head>
+    <meta charset="UTF-8" />
+    <title>Andeshire Playwright MCP - Test Client</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+    <style>
+        :root {
+            color-scheme: dark;
+        }
+
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+            background: #0b0b0f;
+            color: #eaeaf2;
+        }
+
+        .container {
+            max-width: 1100px;
+            margin: 0 auto;
+            padding: 24px;
+            display: grid;
+            gap: 18px;
+        }
+
+        .row {
+            display: grid;
+            gap: 12px;
+            grid-template-columns: 1fr 1fr;
+        }
+
+        @media (max-width: 900px) {
+            .row {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .card {
+            background: linear-gradient(180deg, #11111a, #0c0c12);
+            border: 1px solid #24243a;
+            border-radius: 14px;
+            padding: 16px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        }
+
+        .title {
+            font-size: 16px;
+            font-weight: 600;
+            margin: 0 0 8px 0;
+        }
+
+        .muted {
+            color: #a7a7c2;
+            font-size: 12px;
+        }
+
+        label {
+            font-size: 12px;
+            color: #cfcfe6;
+        }
+
+        input,
+        textarea,
+        select {
+            width: 100%;
+            background: #0f0f18;
+            border: 1px solid #2b2b45;
+            color: #f4f4ff;
+            border-radius: 10px;
+            padding: 10px 12px;
+            outline: none;
+        }
+
+        textarea {
+            min-height: 90px;
+            resize: vertical;
+        }
+
+        .controls {
+            display: grid;
+            grid-template-columns: 1fr 120px 120px;
+            gap: 10px;
+            align-items: end;
+        }
+
+        @media (max-width: 600px) {
+            .controls {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        button {
+            background: #6d28d9;
+            border: 1px solid #7c3aed;
+            color: white;
+            padding: 10px 12px;
+            border-radius: 10px;
+            cursor: pointer;
+            font-weight: 600;
+            transition: 120ms ease;
+        }
+
+        button.secondary {
+            background: #1a1a2b;
+            border-color: #2f2f4a;
+            color: #d9d9f2;
+        }
+
+        button:hover {
+            filter: brightness(1.08);
+        }
+
+        button:disabled {
+            opacity: 0.55;
+            cursor: not-allowed;
+        }
+
+        .stream-box {
+            position: relative;
+            border-radius: 12px;
+            overflow: hidden;
+            background: #050508;
+            border: 1px solid #25253d;
+            min-height: 360px;
+            display: grid;
+            place-items: center;
+        }
+
+        .stream-img {
+            width: 100%;
+            height: auto;
+            display: block;
+        }
+
+        .badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            font-size: 11px;
+            border: 1px solid #2c2c48;
+            background: #121222;
+            color: #cfcfe6;
+        }
+
+        .log {
+            background: #0a0a12;
+            border: 1px solid #22223a;
+            border-radius: 10px;
+            padding: 10px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-size: 11px;
+            white-space: pre-wrap;
+            max-height: 220px;
+            overflow: auto;
+        }
+
+        .two-cols {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        @media (max-width: 700px) {
+            .two-cols {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <div class="card">
+            <h1 class="title">Playwright MCP + LinkedIn Microservice - Test UI</h1>
+            <div class="muted">
+                Stream de screenshots vía WebSocket + prueba del endpoint de envío de mensajes.
+            </div>
+        </div>
+
+        <div class="row">
+            <!-- STREAM CARD -->
+            <div class="card">
+                <div class="two-cols">
+                    <div>
+                        <div class="title">Streaming</div>
+                        <div class="muted">
+                            Conecta a <code>/stream</code> y muestra frames base64.
+                        </div>
+                    </div>
+                    <div style="text-align: right">
+                        <span id="wsStatus" class="badge">WS: desconectado</span>
+                    </div>
+                </div>
+
+                <div style="height: 10px"></div>
+
+                <div class="controls">
+                    <div>
+                        <label>Base URL API</label>
+                        <input id="baseUrl" value="http://localhost:3001" />
+                    </div>
+
+                    <div>
+                        <label>FPS</label>
+                        <select id="fps">
+                            <option value="1">1</option>
+                            <option value="2" selected>2</option>
+                            <option value="4">4</option>
+                            <option value="6">6</option>
+                            <option value="10">10</option>
+                        </select>
+                    </div>
+
+                    <div style="display: flex; gap: 8px">
+                        <button id="btnConnect">Conectar</button>
+                        <button id="btnDisconnect" class="secondary" disabled>
+                            Desconectar
+                        </button>
+                    </div>
+                </div>
+
+                <div style="height: 14px"></div>
+
+                <div class="stream-box">
+                    <img id="streamImg" class="stream-img" alt="stream" />
+                    <div id="emptyHint" class="muted" style="padding: 20px">
+                        Sin frames todavía. Conectá el WS.
+                    </div>
+                </div>
+
+                <div style="height: 10px"></div>
+                <div class="muted">
+                    Si no ves nada, asegurate de que el MCP esté manejando un contexto
+                    con una página activa (tu flujo de LinkedIn debería generarla).
+                </div>
+            </div>
+
+            <!-- LINKEDIN CARD -->
+            <div class="card">
+                <div class="title">Probar /linkedin/send-message</div>
+                <div class="muted">
+                    Este endpoint usa tu flujo real del servicio. El backend debe tener
+                    acceso a <code>OPENAI_API_KEY</code> en el <code>.env</code>.
+                </div>
+
+                <div style="height: 12px"></div>
+
+                <label>Profile URL</label>
+                <input id="profileUrl" placeholder="https://www.linkedin.com/in/..." />
+
+                <div style="height: 10px"></div>
+
+                <label>Mensaje</label>
+                <textarea id="message" placeholder="Hola! ..."></textarea>
+
+                <div style="height: 12px"></div>
+
+                <button id="btnSend">Enviar mensaje</button>
+
+                <div style="height: 12px"></div>
+
+                <div class="title" style="font-size: 14px">Resultado</div>
+                <div id="apiLog" class="log"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Socket.IO client desde el servidor Nest -->
+    <script>
+        function logApi(obj) {
+            const el = document.getElementById("apiLog");
+            el.textContent =
+                typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
+        }
+
+        let socket = null;
+        let lastFrameTs = 0;
+
+        const wsStatus = document.getElementById("wsStatus");
+        const btnConnect = document.getElementById("btnConnect");
+        const btnDisconnect = document.getElementById("btnDisconnect");
+        const baseUrlInput = document.getElementById("baseUrl");
+        const fpsSelect = document.getElementById("fps");
+        const streamImg = document.getElementById("streamImg");
+        const emptyHint = document.getElementById("emptyHint");
+
+        function setWsBadge(state) {
+            wsStatus.textContent = `WS: ${state}`;
+        }
+
+        function ensureSocketIoScript(baseUrl) {
+            return new Promise((resolve, reject) => {
+                // Si ya existe io, listo
+                if (window.io) return resolve();
+
+                const s = document.createElement("script");
+                s.src = `${baseUrl}/socket.io/socket.io.js`;
+                s.onload = () => resolve();
+                s.onerror = () =>
+                    reject(
+                        new Error(
+                            "No se pudo cargar socket.io.js desde el servidor. ¿Está corriendo Nest?"
+                        )
+                    );
+                document.head.appendChild(s);
+            });
+        }
+
+        async function connectStream() {
+            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
+            const fps = fpsSelect.value;
+
+            try {
+                await ensureSocketIoScript(baseUrl);
+
+                socket = window.io(`${baseUrl}/stream`, {
+                    query: { fps },
+                    transports: ["websocket", "polling"],
+                });
+
+                setWsBadge("conectando...");
+
+                socket.on("connect", () => {
+                    setWsBadge("conectado");
+                    btnConnect.disabled = true;
+                    btnDisconnect.disabled = false;
+                });
+
+                socket.on("disconnect", () => {
+                    setWsBadge("desconectado");
+                    btnConnect.disabled = false;
+                    btnDisconnect.disabled = true;
+                });
+
+                socket.on("frame", (payload) => {
+                    const { data, mimeType, ts } = payload || {};
+                    if (!data) return;
+
+                    lastFrameTs = ts || Date.now();
+                    const src = `data:${mimeType || "image/jpeg"};base64,${data}`;
+                    streamImg.src = src;
+                    emptyHint.style.display = "none";
+                });
+
+                socket.on("frame_error", (err) => {
+                    // Mostramos hint suave, no alert
+                    emptyHint.style.display = "block";
+                    emptyHint.textContent =
+                        "Error obteniendo screenshot desde MCP. Revisá consola y logs del backend.";
+                    console.warn("frame_error", err);
+                });
+            } catch (e) {
+                setWsBadge("error");
+                console.error(e);
+                emptyHint.style.display = "block";
+                emptyHint.textContent = String(e?.message ?? e);
+            }
+        }
+
+        function disconnectStream() {
+            if (socket) {
+                socket.disconnect();
+                socket = null;
+            }
+        }
+
+        btnConnect.addEventListener("click", connectStream);
+        btnDisconnect.addEventListener("click", disconnectStream);
+
+        // Health check visual simple
+        (async function bootHealth() {
+            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
+            try {
+                const res = await fetch(`${baseUrl}/mcp/health`);
+                if (res.ok) {
+                    setWsBadge("desconectado");
+                } else {
+                    setWsBadge("API no responde");
+                }
+            } catch {
+                setWsBadge("API no responde");
+            }
+        })();
+
+        // Enviar mensaje
+        document.getElementById("btnSend").addEventListener("click", async () => {
+            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
+            const profileUrl = document.getElementById("profileUrl").value.trim();
+            const message = document.getElementById("message").value.trim();
+
+            if (!profileUrl || !message) {
+                logApi("Faltan profileUrl o message.");
+                return;
+            }
+
+            logApi("Enviando...");
+
+            try {
+                const res = await fetch(`${baseUrl}/linkedin/send-message`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ profileUrl, message }),
+                });
+
+                const data = await res.json().catch(() => ({}));
+                logApi({ status: res.status, ok: res.ok, body: data });
+            } catch (e) {
+                logApi(String(e?.message ?? e));
+            }
+        });
+
+        // Feedback si el stream se queda quieto
+        setInterval(() => {
+            if (!socket) return;
+            const now = Date.now();
+            const diff = now - (lastFrameTs || 0);
+            if (lastFrameTs && diff > 5000) {
+                emptyHint.style.display = "block";
+                emptyHint.textContent =
+                    "No llegan frames hace unos segundos. Puede que no haya página activa en el contexto compartido.";
+            }
+        }, 2000);
+    </script>
+</body>
+
+</html>
