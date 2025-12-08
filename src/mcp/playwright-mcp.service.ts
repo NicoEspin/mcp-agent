@@ -78,6 +78,43 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     return new URL(`${this.getBaseUrl()}/sse`);
   }
 
+  private getCaps() {
+    // "vision" o "vision,pdf"
+    return this.config.get<string>('PLAYWRIGHT_MCP_CAPS') ?? 'vision';
+  }
+
+  private getSnapshotMode() {
+    // incremental | full | none
+    return this.config.get<string>('PLAYWRIGHT_MCP_SNAPSHOT_MODE') ?? 'full';
+  }
+
+  private getConsoleLevel() {
+    // error | warning | info | debug
+    return this.config.get<string>('PLAYWRIGHT_MCP_CONSOLE_LEVEL') ?? 'debug';
+  }
+
+  private getTimeoutAction() {
+    return Number(this.config.get('PLAYWRIGHT_MCP_TIMEOUT_ACTION') ?? 15000);
+  }
+
+  private getTimeoutNavigation() {
+    return Number(
+      this.config.get('PLAYWRIGHT_MCP_TIMEOUT_NAVIGATION') ?? 90000,
+    );
+  }
+
+  private getViewportSize() {
+    return (
+      this.config.get<string>('PLAYWRIGHT_MCP_VIEWPORT_SIZE') ?? '1280x720'
+    );
+  }
+
+  private getBlockServiceWorkers() {
+    return (
+      (this.config.get<string>('PLAYWRIGHT_MCP_BLOCK_SW') ?? 'false') === 'true'
+    );
+  }
+
   private extractTools(resp: any): any[] {
     return (
       resp?.tools ??
@@ -124,21 +161,45 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
 
       '--user-data-dir',
       userDataDir,
-
       '--shared-browser-context',
 
-      // Para que tu stream de screenshots tenga más chances:
+      // Capabilities extra
       '--caps',
-      'vision',
+      this.getCaps(),
 
+      // Mejor observabilidad
+      '--console-level',
+      this.getConsoleLevel(),
+
+      // Snapshots más útiles para agentes
+      '--snapshot-mode',
+      this.getSnapshotMode(),
+
+      // Timeouts más realistas para LinkedIn
+      '--timeout-action',
+      String(this.getTimeoutAction()),
+      '--timeout-navigation',
+      String(this.getTimeoutNavigation()),
+
+      // Layout estable
+      '--viewport-size',
+      this.getViewportSize(),
+
+      // Tu init page
       '--init-page',
       initPagePath,
 
-      // Dev only: evitá errores de host check raros al usar 127.0.0.1
+      // Host checks
       '--allowed-hosts',
       'localhost',
       '127.0.0.1',
     ];
+
+    // Opcional: reducir rarezas de SPAs
+    if (this.getBlockServiceWorkers()) {
+      args.push('--block-service-workers');
+    }
+
 
     // Solo agregá --browser si querés canal específico
     if (browser) {
@@ -203,51 +264,54 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async connectClient() {
-  if (this.connected || this.connecting) return;
-  this.connecting = true;
+    if (this.connected || this.connecting) return;
+    this.connecting = true;
 
-  try {
-    const { Client } = await import(
-      "@modelcontextprotocol/sdk/client/index.js"
-    );
-
-    const client = new Client(
-      { name: "andeshire-playwright-client", version: "0.1.0" },
-      { capabilities: {} }
-    );
-
-    // 1) Intentar Streamable HTTP -> /mcp
     try {
-      const mod = await import(
-        "@modelcontextprotocol/sdk/client/streamableHttp.js"
+      const { Client } =
+        await import('@modelcontextprotocol/sdk/client/index.js');
+
+      const client = new Client(
+        { name: 'andeshire-playwright-client', version: '0.1.0' },
+        { capabilities: {} },
       );
-      const transport = new mod.StreamableHTTPClientTransport(this.getHttpUrl());
-      await client.connect(transport);
 
-      this.client = client;
-      this.connected = true;
-      this.logger.log(`Connected to Playwright MCP (HTTP) at ${this.getHttpUrl()}`);
-      return;
-    } catch (httpErr) {
-      // 2) Fallback SSE -> /sse
-      const mod = await import("@modelcontextprotocol/sdk/client/sse.js");
-      const transport = new mod.SSEClientTransport(this.getSseUrl());
-      await client.connect(transport);
+      // 1) Intentar Streamable HTTP -> /mcp
+      try {
+        const mod =
+          await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+        const transport = new mod.StreamableHTTPClientTransport(
+          this.getHttpUrl(),
+        );
+        await client.connect(transport);
 
-      this.client = client;
-      this.connected = true;
-      this.logger.log(`Connected to Playwright MCP (SSE) at ${this.getSseUrl()}`);
-      return;
+        this.client = client;
+        this.connected = true;
+        this.logger.log(
+          `Connected to Playwright MCP (HTTP) at ${this.getHttpUrl()}`,
+        );
+        return;
+      } catch (httpErr) {
+        // 2) Fallback SSE -> /sse
+        const mod = await import('@modelcontextprotocol/sdk/client/sse.js');
+        const transport = new mod.SSEClientTransport(this.getSseUrl());
+        await client.connect(transport);
+
+        this.client = client;
+        this.connected = true;
+        this.logger.log(
+          `Connected to Playwright MCP (SSE) at ${this.getSseUrl()}`,
+        );
+        return;
+      }
+    } catch (err) {
+      this.client = null;
+      this.connected = false;
+      throw err;
+    } finally {
+      this.connecting = false;
     }
-  } catch (err) {
-    this.client = null;
-    this.connected = false;
-    throw err;
-  } finally {
-    this.connecting = false;
   }
-}
-
 
   private async ensureConnected() {
     if (this.connected) return;
