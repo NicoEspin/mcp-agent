@@ -4,6 +4,7 @@ import {
   ExecutionContext,
   Injectable,
   UnauthorizedException,
+  ServiceUnavailableException,
   HttpException,
   Logger,
 } from '@nestjs/common';
@@ -20,7 +21,9 @@ export class LinkedinSessionGuard implements CanActivate {
 
     const force =
       req?.query?.forceSessionCheck === 'true' ||
-      req?.headers?.['x-force-session-check'] === 'true';
+      req?.query?.forceSessionCheck === '1' ||
+      req?.headers?.['x-force-session-check'] === 'true' ||
+      req?.headers?.['x-force-session-check'] === '1';
 
     try {
       const check = await this.session.checkLoggedIn(force);
@@ -32,7 +35,16 @@ export class LinkedinSessionGuard implements CanActivate {
         `Session check => ok=${check.ok} logged=${check.isLoggedIn} conf=${check.confidence ?? '?'} reason=${check.reason ?? ''}`,
       );
 
-      if (!check.ok || !check.isLoggedIn) {
+      // ✅ Diferenciar "no pude validar" vs "validé y no está logueado"
+      if (!check.ok) {
+        throw new ServiceUnavailableException({
+          ok: false,
+          error: 'LinkedIn session validation unavailable',
+          detail: check,
+        });
+      }
+
+      if (!check.isLoggedIn) {
         throw new UnauthorizedException({
           ok: false,
           error: 'LinkedIn session validation failed',
@@ -42,12 +54,11 @@ export class LinkedinSessionGuard implements CanActivate {
 
       return true;
     } catch (e: any) {
-      // ✅ CLAVE: no vuelvas a envolver exceptions ya conocidas
       if (e instanceof HttpException) {
         throw e;
       }
 
-      throw new UnauthorizedException({
+      throw new ServiceUnavailableException({
         ok: false,
         error: 'LinkedIn session validation error',
         message: e?.message ?? 'Unknown session error',

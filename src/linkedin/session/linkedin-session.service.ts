@@ -1,10 +1,8 @@
 // src/linkedin/session/linkedin-session.service.ts
-import { Injectable, Logger } from "@nestjs/common";
-import { ConfigService } from "@nestjs/config";
-import { PlaywrightMcpService } from "../../mcp/playwright-mcp.service";
-import { StreamService } from "../../stream/stream.service";
-
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { PlaywrightMcpService } from '../../mcp/playwright-mcp.service';
+import { StreamService } from '../../stream/stream.service';
 
 export interface LinkedinSessionCheck {
   ok: boolean;
@@ -19,7 +17,6 @@ export interface LinkedinSessionCheck {
 @Injectable()
 export class LinkedinSessionService {
   private readonly logger = new Logger(LinkedinSessionService.name);
-
   private lastCheck: LinkedinSessionCheck | null = null;
 
   constructor(
@@ -29,55 +26,84 @@ export class LinkedinSessionService {
   ) {}
 
   private getOpenAIKey() {
-    return this.config.get<string>("OPENAI_API_KEY");
+    return this.config.get<string>('OPENAI_API_KEY');
   }
 
   private getOpenAIBaseUrl() {
     return (
-      this.config.get<string>("OPENAI_BASE_URL") ?? "https://api.openai.com/v1"
+      this.config.get<string>('OPENAI_BASE_URL') ?? 'https://api.openai.com/v1'
     );
   }
 
   private getVisionModel() {
-    // dejalo configurable porque los nombres/modelos pueden variar
-    return this.config.get<string>("OPENAI_VISION_MODEL") ?? "gpt-5-nano";
-  }
-
-  private getCheckUrl() {
-    return (
-      this.config.get<string>("LINKEDIN_SESSION_CHECK_URL") ??
-      "https://www.linkedin.com/feed/"
-    );
+    return this.config.get<string>('OPENAI_VISION_MODEL') ?? 'gpt-5-nano';
   }
 
   private getTtlMs() {
-    return Number(this.config.get("LINKEDIN_SESSION_CHECK_TTL_MS") ?? 30000);
+    return Number(this.config.get('LINKEDIN_SESSION_CHECK_TTL_MS') ?? 30000);
   }
 
   private strictMode() {
-    return (this.config.get<string>("LINKEDIN_SESSION_CHECK_STRICT") ?? "true") === "true";
+    return (
+      (this.config.get<string>('LINKEDIN_SESSION_CHECK_STRICT') ?? 'true') ===
+      'true'
+    );
+  }
+
+  private preNavigateEnabled() {
+    return (
+      (this.config.get<string>('LINKEDIN_SESSION_CHECK_PRENAVIGATE') ??
+        'false') === 'true'
+    );
+  }
+
+  private getPreNavigateUrl() {
+    return (
+      this.config.get<string>('LINKEDIN_SESSION_CHECK_URL') ??
+      'https://www.linkedin.com/'
+    );
   }
 
   private isFresh(check: LinkedinSessionCheck) {
     return Date.now() - check.checkedAt < this.getTtlMs();
   }
 
+  private buildPrompt(): string {
+    return `
+Sos un validador de sesión de LinkedIn.
+Vas a recibir UNA captura de pantalla del navegador actual.
+
+Respondé SOLO JSON válido con esta forma:
+{
+  "isLoggedIn": boolean,
+  "confidence": number,
+  "signals": string[],
+  "reason": string
+}
+
+Usá señales visuales generales, SIN requerir /feed:
+- Logged in: barra superior de LinkedIn visible, avatar del usuario, menú con "Mi red", "Empleos", "Mensajes", "Notificaciones", etc.
+- Not logged in: pantalla de login/registro, botones "Iniciar sesión / Sign in", inputs de email/contraseña, challenge/verify.
+
+No incluyas texto fuera del JSON.
+`.trim();
+  }
+
   private extractAssistantText(resp: any): string {
-    // Variantes posibles según SDK/endpoint
-    if (typeof resp?.output_text === "string") return resp.output_text;
+    if (typeof resp?.output_text === 'string') return resp.output_text;
 
     const output = resp?.output;
     if (Array.isArray(output)) {
       for (const item of output) {
-        if (item?.type === "message" && Array.isArray(item?.content)) {
-          const textPart = item.content.find((c: any) => c?.type === "output_text");
+        if (item?.type === 'message' && Array.isArray(item?.content)) {
+          const textPart = item.content.find(
+            (c: any) => c?.type === 'output_text',
+          );
           if (textPart?.text) return String(textPart.text);
         }
       }
     }
-
-    // fallback ultra defensivo
-    return "";
+    return '';
   }
 
   private safeJsonParse(s: string): any | null {
@@ -94,27 +120,31 @@ export class LinkedinSessionService {
       }
     }
   }
+  // dentro de LinkedinSessionService
 
-  private buildPrompt(): string {
-    return `
-Sos un validador de sesión de LinkedIn.
-Vas a recibir una captura de pantalla de un navegador con el contexto compartido.
-
-Respondé SOLO JSON válido con esta forma:
-{
-  "isLoggedIn": boolean,
-  "confidence": number, 
-  "signals": string[],
-  "reason": string
+private buildSessionSchema() {
+  return {
+    type: "object",
+    additionalProperties: false,
+    properties: {
+      isLoggedIn: { type: "boolean" },
+      confidence: { type: "number" },
+      signals: { type: "array", items: { type: "string" } },
+      reason: { type: "string" },
+    },
+    required: ["isLoggedIn", "confidence", "signals", "reason"],
+  };
 }
 
-Criterios sugeridos:
-- Logged in: feed visible, avatar del usuario, barra superior con "Mi red", "Empleos", "Mensajes", etc.
-- Not logged in: pantalla de login, botones "Iniciar sesión / Sign in", input email/password, challenge/verify.
+private buildTextFormat() {
+  return {
+    type: "json_schema",
+    name: "linkedin_session_check",
+    strict: true,
+    schema: this.buildSessionSchema(),
+  };
+}
 
-No incluyas texto fuera del JSON.
-`.trim();
-  }
 
   async checkLoggedIn(force = false): Promise<LinkedinSessionCheck> {
     if (!force && this.lastCheck && this.isFresh(this.lastCheck)) {
@@ -127,72 +157,55 @@ No incluyas texto fuera del JSON.
         ok: false,
         isLoggedIn: false,
         confidence: 0,
-        signals: ["missing_openai_key"],
-        reason: "OPENAI_API_KEY no configurada",
+        signals: ['missing_openai_key'],
+        reason: 'OPENAI_API_KEY no configurada',
         checkedAt: Date.now(),
       };
       this.lastCheck = fallback;
       return fallback;
     }
 
-    // 1) Navegar a una vista estable para evaluar sesión
-    try {
-      const url = this.getCheckUrl();
-      await this.mcp.callTool("browser_navigate", { url });
-      await sleep(1200);
-    } catch (e: any) {
-      this.logger.warn(`Session pre-navigate failed: ${e?.message ?? e}`);
+    // ✅ Opcional y desactivado por defecto:
+    if (this.preNavigateEnabled()) {
+      try {
+        await this.mcp.callTool('browser_navigate', {
+          url: this.getPreNavigateUrl(),
+        });
+        // mini espera para estabilizar UI
+        await new Promise((r) => setTimeout(r, 800));
+      } catch (e: any) {
+        this.logger.warn(`Session pre-navigate failed: ${e?.message ?? e}`);
+      }
     }
 
-    // 2) Screenshot
-    const { data, mimeType } = await this.stream.getScreenshotBase64();
+    // ✅ Ideal: reusar frame reciente del stream
+    const { data, mimeType } = await this.stream.getCachedScreenshotBase64(800);
     const dataUrl = `data:${mimeType};base64,${data}`;
 
-    // 3) Llamada a OpenAI Responses (texto + imagen)
-    const body: any = {
-      model: this.getVisionModel(),
-      input: [
-        {
-          role: "user",
-          content: [
-            { type: "input_text", text: this.buildPrompt() },
-            { type: "input_image", image_url: dataUrl, detail: "low" },
-          ],
-        },
+   const body: any = {
+  model: this.getVisionModel(),
+  input: [
+    {
+      role: "user",
+      content: [
+        { type: "input_text", text: this.buildPrompt() },
+        { type: "input_image", image_url: dataUrl, detail: "low" },
       ],
-      // Si tu modelo soporta Structured Outputs, podés activar algo así:
-      // text: {
-      //   format: {
-      //     type: "json_schema",
-      //     json_schema: {
-      //       name: "linkedin_session_check",
-      //       strict: true,
-      //       schema: {
-      //         type: "object",
-      //         additionalProperties: false,
-      //         properties: {
-      //           isLoggedIn: { type: "boolean" },
-      //           confidence: { type: "number" },
-      //           signals: { type: "array", items: { type: "string" } },
-      //           reason: { type: "string" },
-      //         },
-      //         required: ["isLoggedIn", "confidence", "signals", "reason"],
-      //       },
-      //     },
-      //   },
-      // },
-      max_output_tokens: 150,
-    };
+    },
+  ],
+  text: {
+    format: this.buildTextFormat(),
+  },
+  max_output_tokens: 200,
+};
 
-    // La forma exacta de Structured Outputs en Responses usa text.format. :contentReference[oaicite:4]{index=4}
-    // Dejé el bloque comentado para que lo actives si te encaja.
 
     let raw: any;
     try {
       const res = await fetch(`${this.getOpenAIBaseUrl()}/responses`, {
-        method: "POST",
+        method: 'POST',
         headers: {
-          "Content-Type": "application/json",
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
         },
         body: JSON.stringify(body),
@@ -205,7 +218,7 @@ No incluyas texto fuera del JSON.
           ok: false,
           isLoggedIn: false,
           confidence: 0,
-          signals: ["openai_http_error"],
+          signals: ['openai_http_error'],
           reason: raw?.error?.message ?? `OpenAI error ${res.status}`,
           checkedAt: Date.now(),
           imageMimeType: mimeType,
@@ -218,8 +231,8 @@ No incluyas texto fuera del JSON.
         ok: false,
         isLoggedIn: false,
         confidence: 0,
-        signals: ["openai_network_error"],
-        reason: e?.message ?? "OpenAI network error",
+        signals: ['openai_network_error'],
+        reason: e?.message ?? 'OpenAI network error',
         checkedAt: Date.now(),
         imageMimeType: mimeType,
       };
@@ -234,28 +247,28 @@ No incluyas texto fuera del JSON.
       ok: true,
       isLoggedIn: Boolean(parsed?.isLoggedIn),
       confidence:
-        typeof parsed?.confidence === "number" ? parsed.confidence : undefined,
+        typeof parsed?.confidence === 'number' ? parsed.confidence : undefined,
       signals: Array.isArray(parsed?.signals) ? parsed.signals : undefined,
-      reason: typeof parsed?.reason === "string" ? parsed.reason : undefined,
+      reason: typeof parsed?.reason === 'string' ? parsed.reason : undefined,
       checkedAt: Date.now(),
       imageMimeType: mimeType,
     };
 
-    // modo estricto: si no pudimos parsear JSON, fallamos cerrado
     if (this.strictMode() && !parsed) {
       check.ok = false;
       check.isLoggedIn = false;
       check.confidence = 0;
-      check.signals = ["unparsable_model_output"];
+      check.signals = ['unparsable_model_output'];
       check.reason =
-        "El modelo no devolvió JSON parseable para la validación de sesión";
+        'El modelo no devolvió JSON parseable para la validación de sesión';
     }
 
     this.lastCheck = check;
+
     this.logger.log(
       `LinkedIn session check -> logged=${check.isLoggedIn} ` +
-        `conf=${check.confidence ?? "?"} ` +
-        `signals=${(check.signals ?? []).join(",")}`,
+        `conf=${check.confidence ?? '?'} ` +
+        `signals=${(check.signals ?? []).join(',')}`,
     );
 
     return check;
@@ -264,8 +277,7 @@ No incluyas texto fuera del JSON.
   async assertLoggedIn(force = false) {
     const check = await this.checkLoggedIn(force);
     if (!check.ok || !check.isLoggedIn) {
-      const reason = check.reason ?? "LinkedIn session not authenticated";
-      throw new Error(reason);
+      throw new Error(check.reason ?? 'LinkedIn session not authenticated');
     }
     return check;
   }

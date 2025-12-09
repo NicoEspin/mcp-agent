@@ -1,12 +1,24 @@
 // src/linkedin/linkedin.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { PlaywrightMcpService } from '../mcp/playwright-mcp.service';
+import OpenAI from 'openai';
+import { ConfigService } from '@nestjs/config';
+import { StreamService } from '../stream/stream.service';
 
 @Injectable()
 export class LinkedinService {
   private readonly logger = new Logger(LinkedinService.name);
+  private readonly openai: OpenAI;
 
-  constructor(private readonly mcp: PlaywrightMcpService) {}
+  constructor(
+    private readonly mcp: PlaywrightMcpService,
+    private readonly config: ConfigService,
+    private readonly stream: StreamService,
+  ) {
+    this.openai = new OpenAI({
+      apiKey: this.config.get<string>('OPENAI_API_KEY'),
+    });
+  }
 
   private extractTools(resp: any): any[] {
     return (
@@ -22,6 +34,134 @@ export class LinkedinService {
     const res = await this.mcp.listTools();
     const tools = this.extractTools(res);
     return tools.some((t: any) => t?.name === name);
+  }
+  // --------- Helper robusto para leer texto de tool result ---------
+  private extractFirstText(result: any): string | null {
+    if (!result) return null;
+
+    if (typeof result === 'string') return result;
+
+    const content =
+      result?.content ??
+      result?.result?.content ??
+      result?.data?.content ??
+      result?.payload?.content;
+
+    if (Array.isArray(content)) {
+      const textPart = content.find(
+        (c: any) => c?.type === 'text' && typeof c?.text === 'string',
+      );
+      if (textPart) return textPart.text;
+    }
+
+    if (typeof result?.text === 'string') return result.text;
+    if (typeof result?.content === 'string') return result.content;
+
+    return null;
+  }
+
+  // ----------------------------
+  // 1) Screenshot del perfil
+  // ----------------------------
+  // ✅ Nueva versión sin browser_run_code
+  private async captureProfileScreenshot(profileUrl: string): Promise<{
+    base64: string;
+    mimeType: string;
+  }> {
+    // Validamos tool navigate
+    const canNavigate = await this.hasTool('browser_navigate');
+    if (!canNavigate) {
+      throw new Error(
+        'Tu servidor MCP no expone browser_navigate. Revisá flags/caps del MCP.',
+      );
+    }
+
+    // 1) Navegar al perfil
+    await this.mcp.callTool('browser_navigate', { url: profileUrl });
+
+    // 2) Espera breve para que la top card cargue
+    await new Promise((r) => setTimeout(r, 1200));
+
+    // 3) Tomar screenshot usando el pipeline que ya te funciona
+    // Si el stream está activo, esto sigue siendo seguro.
+    const { data, mimeType } =
+      await this.stream.getCachedScreenshotBase64(1200);
+
+    if (!data) {
+      throw new Error('Screenshot vacío desde MCP.');
+    }
+
+    return {
+      base64: data,
+      mimeType: mimeType ?? 'image/png',
+    };
+  }
+
+  // ----------------------------
+  // 2) Check Connection (IA)
+  // ----------------------------
+  async checkConnection(profileUrl: string): Promise<boolean> {
+    const { base64, mimeType } =
+      await this.captureProfileScreenshot(profileUrl);
+
+    const prompt = `
+Analizá esta captura del perfil de LinkedIn.
+
+Objetivo:
+Determinar si el usuario LOGUEADO actualmente en LinkedIn ya está conectado con este perfil.
+
+Reglas de salida:
+- Respondé SOLO con "true" o "false" (sin comillas).
+- true => ya están conectados.
+- false => NO están conectados o aparece un CTA que indica que hay que enviar solicitud
+          (por ejemplo: "Conectar", "Connect", "Seguir", "Follow", "Mensaje" sin indicación de conexión, etc.).
+
+Pistas visuales típicas:
+- "1er/1st" suele indicar conexión.
+- Botón "Conectar/Connect" suele indicar NO conexión.
+- "Pendiente/Pending" también debe considerarse false.
+`;
+
+    const resp = await this.openai.chat.completions.create({
+      model: 'gpt-5-nano',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Sos un clasificador estricto. Respondés únicamente true o false.',
+        },
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: prompt },
+            {
+              type: 'image_url',
+              image_url: {
+                url: `data:${mimeType};base64,${base64}`,
+              },
+            },
+          ],
+        },
+      ],
+    });
+
+    const out =
+      resp?.choices?.[0]?.message?.content?.trim().toLowerCase() ?? '';
+
+    if (out === 'true') return true;
+    if (out === 'false') return false;
+
+    // Fallback super conservador
+    const hasTrue = /\btrue\b/i.test(out);
+    const hasFalse = /\bfalse\b/i.test(out);
+
+    if (hasTrue && !hasFalse) return true;
+    if (hasFalse && !hasTrue) return false;
+
+    this.logger.warn(`checkConnection: salida inesperada del modelo: ${out}`);
+
+    // Por seguridad funcional: si no estamos seguros, asumimos NO conectado.
+    return false;
   }
 
   async sendMessage(profileUrl: string, message: string) {
@@ -291,6 +431,281 @@ export class LinkedinService {
       };
     } catch (e: any) {
       this.logger.warn(`sendMessage failed: ${e?.message ?? e}`);
+      return { ok: false, error: e?.message ?? 'Unknown error' };
+    }
+  }
+  // ----------------------------
+  // NUEVO
+  // ----------------------------
+  async sendConnection(profileUrl: string, note?: string) {
+    const canRunCode = await this.hasTool('browser_run_code');
+
+    if (!canRunCode) {
+      return {
+        ok: false,
+        error:
+          'Tu servidor MCP no expone browser_run_code. Actualizá @playwright/mcp y el SDK.',
+      };
+    }
+
+    const code = `
+const profileUrl = ${JSON.stringify(profileUrl)};
+const noteText = ${JSON.stringify(note ?? '')};
+
+const debug = async (msg) => {
+  console.log('[send-connection]', msg, 'url=', page.url());
+};
+
+// 1) Ir al perfil
+await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForTimeout(1200);
+await debug('Perfil cargado');
+
+// ---------- Helpers de scope ----------
+const main = page.locator('main');
+
+const topCard =
+  main.locator('[data-view-name*="profile"], .pv-top-card, .pv-top-card-v2-ctas').first();
+
+const scope = (await topCard.count()) ? topCard : main;
+
+// Helpers para encontrar clickable desde un icono SVG
+const getClickableFromIcon = async (iconLocator) => {
+  if (!(await iconLocator.count())) return null;
+
+  const btnAncestor = iconLocator.locator('xpath=ancestor::button[1]');
+  if (await btnAncestor.count()) return btnAncestor;
+
+  const linkAncestor = iconLocator.locator('xpath=ancestor::a[1]');
+  if (await linkAncestor.count()) return linkAncestor;
+
+  const spanAncestor = iconLocator.locator('xpath=ancestor::span[1]');
+  if (await spanAncestor.count()) return spanAncestor;
+
+  const divAncestor = iconLocator.locator('xpath=ancestor::div[1]');
+  if (await divAncestor.count()) return divAncestor;
+
+  return null;
+};
+
+const findConnectCta = async () => {
+  // A) Preferido: icono connect dentro del scope
+  const icon = scope.locator('svg#connect-small').first();
+  let cta = await getClickableFromIcon(icon);
+  if (cta) return cta;
+
+  // B) Fallback por texto dentro del scope (evita header global)
+  const byText = scope.locator('button, a').filter({
+    hasText: /conectar|connect/i,
+  }).first();
+
+  if (await byText.count()) return byText;
+
+  return null;
+};
+
+// Estratégia para overflow "tres puntos" variante mobile/web-ios
+const clickOverflowAndFindConnect = async () => {
+  const overflowIcon = scope.locator('svg#overflow-web-ios-small').first();
+  const overflowBtn = await getClickableFromIcon(overflowIcon);
+
+  if (overflowBtn && (await overflowBtn.count())) {
+    await debug('Click overflow (overflow-web-ios-small)');
+    await overflowBtn.scrollIntoViewIfNeeded();
+    await overflowBtn.click({ timeout: 15000, force: true });
+    await page.waitForTimeout(250);
+
+    // Buscar item del menú por rol
+    let item = page.getByRole('menuitem', {
+      name: /conectar|connect/i,
+    }).first();
+
+    if (await item.count()) {
+      await item.click({ timeout: 15000 });
+      return true;
+    }
+
+    // Fallback por texto genérico cerca del menú abierto
+    item = page.locator('button, a, div, span').filter({
+      hasText: /conectar|connect/i,
+    }).first();
+
+    if (await item.count()) {
+      await item.click({ timeout: 15000, force: true });
+      return true;
+    }
+  }
+
+  return false;
+};
+
+// Fallback adicional al overflow clásico del perfil ("Más/More")
+const clickProfileMoreAndFindConnect = async () => {
+  const moreBtn = scope.locator(
+    'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
+    'button[data-view-name="profile-overflow-button"][aria-label="More"]'
+  ).first();
+
+  if (!(await moreBtn.count())) return false;
+
+  await debug('Click Más/More del perfil');
+  await moreBtn.scrollIntoViewIfNeeded();
+  await moreBtn.click({ timeout: 15000, force: true });
+  await page.waitForTimeout(250);
+
+  let item = page.getByRole('menuitem', {
+    name: /conectar|connect/i,
+  }).first();
+
+  if (await item.count()) {
+    await item.click({ timeout: 15000 });
+    return true;
+  }
+
+  item = page.locator('button, a, div, span').filter({
+    hasText: /conectar|connect/i,
+  }).first();
+
+  if (await item.count()) {
+    await item.click({ timeout: 15000, force: true });
+    return true;
+  }
+
+  return false;
+};
+
+// 2) Intentar CTA directo
+let connectBtn = await findConnectCta();
+
+if (connectBtn) {
+  // Guard anti-header (por si el selector se fue de scope)
+  const aria = (await connectBtn.getAttribute('aria-label')) ?? '';
+  if (/para negocios|for business/i.test(aria)) {
+    throw new Error('Selector de Conectar resolvió a un botón del header. Ajustar scope.');
+  }
+
+  await debug('Click CTA Conectar (directo)');
+  await connectBtn.scrollIntoViewIfNeeded();
+  await connectBtn.click({ timeout: 15000, force: true });
+} else {
+  await debug('CTA directo no encontrado. Probando overflow.');
+
+  const okOverflow = await clickOverflowAndFindConnect();
+  if (!okOverflow) {
+    await debug('Overflow web-ios no disponible. Probando Más/More del perfil.');
+    const okMore = await clickProfileMoreAndFindConnect();
+
+    if (!okMore) {
+      throw new Error('No se encontró CTA Conectar ni opciones de overflow del perfil.');
+    }
+  }
+}
+
+// 3) Esperar posible diálogo de invitación
+const waitDialog = async (timeout = 10000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    const dlg = page.getByRole('dialog').last();
+    if ((await dlg.count()) && (await dlg.isVisible())) return dlg;
+    await page.waitForTimeout(200);
+  }
+  return null;
+};
+
+await page.waitForTimeout(600);
+
+const dialog = await waitDialog();
+
+// 4) Si hay dialog, opcionalmente añadir nota y enviar
+if (dialog) {
+  await debug('Dialog de conexión detectado');
+
+  if (noteText && noteText.trim().length) {
+    // Intentar botón "Añadir nota"
+    const addNoteBtn = dialog.getByRole('button', {
+      name: /añadir nota|agregar nota|add a note/i,
+    }).first();
+
+    if (await addNoteBtn.count()) {
+      await addNoteBtn.click({ timeout: 15000, force: true });
+      await page.waitForTimeout(250);
+
+      // Campo de nota (textarea o contenteditable)
+      let noteBox = dialog.locator('textarea').first();
+
+      if (!(await noteBox.count())) {
+        noteBox = dialog.locator('div[role="textbox"][contenteditable="true"]').first();
+      }
+
+      if (await noteBox.count()) {
+        await noteBox.click({ timeout: 15000 });
+        await noteBox.fill(noteText).catch(async () => {
+          await noteBox.type(noteText, { delay: 5 });
+        });
+        await debug('Nota escrita');
+      }
+    }
+  }
+
+  // Botón Enviar/Send dentro del dialog
+  let sendBtn = dialog.getByRole('button', {
+    name: /enviar|send/i,
+  }).first();
+
+  if (!(await sendBtn.count())) {
+    sendBtn = dialog.locator('button').filter({ hasText: /enviar|send/i }).first();
+  }
+
+  if (await sendBtn.count()) {
+    await sendBtn.scrollIntoViewIfNeeded();
+    await debug('Click Enviar invitación');
+    await sendBtn.click({ timeout: 15000, force: true });
+  } else {
+    throw new Error('No se encontró el botón Enviar en el diálogo de conexión.');
+  }
+} else {
+  // 5) Si no hay diálogo, puede haber enviado directo
+  await debug('No se detectó diálogo. Verificando estado de invitación.');
+}
+
+// 6) Verificación suave de estado
+await page.waitForTimeout(800);
+
+const pendingMarkers = page.locator('button, span, div').filter({
+  hasText: /pendiente|pending|invitation sent|invitación enviada/i,
+}).first();
+
+const maybePending = (await pendingMarkers.count()) ? true : false;
+
+await debug('Flujo de conexión finalizado');
+
+return { ok: true, maybePending };
+`;
+
+    try {
+      const result: any = await this.mcp.callTool('browser_run_code', { code });
+
+      this.logger.debug(
+        'browser_run_code result: ' + JSON.stringify(result, null, 2),
+      );
+
+      if (result?.isError) {
+        return {
+          ok: false,
+          error: 'Playwright MCP error en browser_run_code',
+          detail: result?.content ?? result,
+        };
+      }
+
+      return {
+        ok: true,
+        profileUrl,
+        notePreview: (note ?? '').slice(0, 80),
+        note: 'Solicitud de conexión intentada vía browser_run_code usando el contexto compartido.',
+        toolResult: result,
+      };
+    } catch (e: any) {
+      this.logger.warn(`sendConnection failed: ${e?.message ?? e}`);
       return { ok: false, error: e?.message ?? 'Unknown error' };
     }
   }

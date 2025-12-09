@@ -242,7 +242,7 @@
 
             <!-- LINKEDIN CARD -->
             <div class="card">
-                <div class="title">Probar /linkedin/send-message</div>
+                <div class="title">Probar api/v1/linkedin/send-message</div>
                 <div class="muted">
                     Este endpoint usa tu flujo real del servicio. El backend debe tener
                     acceso a <code>OPENAI_API_KEY</code> en el <code>.env</code>.
@@ -254,13 +254,22 @@
                 <input id="profileUrl" placeholder="https://www.linkedin.com/in/..." />
 
                 <div style="height: 10px"></div>
-
                 <label>Mensaje</label>
                 <textarea id="message" placeholder="Hola! ..."></textarea>
 
+                <div style="height: 10px"></div>
+
+                <label>Nota de invitación (opcional)</label>
+                <textarea id="connectionNote" placeholder="Hola! Me gustaría conectar contigo..."></textarea>
+
                 <div style="height: 12px"></div>
 
-                <button id="btnSend">Enviar mensaje</button>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                    <button id="btnSend">Enviar mensaje</button>
+                    <button id="btnConnectRequest" class="secondary">Enviar solicitud</button>
+                    <button id="btnCheckConnection" class="secondary">Check conexión</button>
+                </div>
+
 
                 <div style="height: 12px"></div>
 
@@ -376,7 +385,7 @@
         (async function bootHealth() {
             const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
             try {
-                const res = await fetch(`${baseUrl}/mcp/health`);
+                const res = await fetch(`${baseUrl}/api/v1/mcp/health`);
                 if (res.ok) {
                     setWsBadge("desconectado");
                 } else {
@@ -401,7 +410,7 @@
             logApi("Enviando...");
 
             try {
-                const res = await fetch(`${baseUrl}/linkedin/send-message`, {
+                const res = await fetch(`${baseUrl}/api/v1/linkedin/send-message`, {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ profileUrl, message }),
@@ -413,6 +422,84 @@
                 logApi(String(e?.message ?? e));
             }
         });
+        // Enviar solicitud de conexión
+        document.getElementById("btnConnectRequest").addEventListener("click", async () => {
+            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
+            const profileUrl = document.getElementById("profileUrl").value.trim();
+            const note = document.getElementById("connectionNote").value.trim();
+
+            if (!profileUrl) {
+                logApi("Falta profileUrl.");
+                return;
+            }
+
+            logApi("Enviando solicitud...");
+
+            try {
+                const res = await fetch(`${baseUrl}/api/v1/linkedin/send-connection`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ profileUrl, note: note || undefined }),
+                });
+
+                const data = await res.json().catch(() => ({}));
+                logApi({ status: res.status, ok: res.ok, body: data });
+            } catch (e) {
+                logApi(String(e?.message ?? e));
+            }
+        });
+        function normalizeBool(x) {
+            if (typeof x === "boolean") return x;
+            if (typeof x === "string") {
+                const v = x.trim().toLowerCase();
+                if (v === "true") return true;
+                if (v === "false") return false;
+            }
+            return null;
+        }
+
+        // Check conexión
+        document.getElementById("btnCheckConnection").addEventListener("click", async () => {
+            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
+            const profileUrl = document.getElementById("profileUrl").value.trim();
+
+            if (!profileUrl) {
+                logApi("Falta profileUrl.");
+                return;
+            }
+
+            logApi("Chequeando conexión...");
+
+            try {
+                const res = await fetch(`${baseUrl}/api/v1/linkedin/check-connection`, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ profileUrl }),
+                });
+
+                // Tu endpoint debería devolver un boolean JSON.
+                // Igual dejamos fallback por si alguna vez devuelve texto plano.
+                let data;
+                try {
+                    data = await res.json();
+                } catch {
+                    data = await res.text();
+                }
+
+                const connected = normalizeBool(data);
+
+                logApi({
+                    status: res.status,
+                    ok: res.ok,
+                    connected,
+                    raw: data,
+                    profileUrl,
+                });
+            } catch (e) {
+                logApi(String(e?.message ?? e));
+            }
+        });
+
 
         // Feedback si el stream se queda quieto
         setInterval(() => {
