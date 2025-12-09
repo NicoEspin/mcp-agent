@@ -64,9 +64,14 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getBaseUrl() {
+    const port = this.getPort();
+    const host = this.getHost();
+
     const base =
       this.config.get<string>('PLAYWRIGHT_MCP_BASE_URL') ??
-      `http://localhost:${this.getPort()}`;
+      this.config.get<string>('PLAYWRIGHT_MCP_BASE') ??
+      `http://${host}:${port}`;
+
     return base.replace(/\/$/, '');
   }
 
@@ -124,9 +129,15 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
       []
     );
   }
-
+  private getAllowedHosts() {
+    return this.config.get<string>('PLAYWRIGHT_MCP_ALLOWED_HOSTS') ?? '*';
+  }
+  private getHost() {
+    return this.config.get<string>('PLAYWRIGHT_MCP_HOST') ?? '127.0.0.1';
+  }
   private async startServerProcess() {
     const port = this.getPort();
+    const host = this.getHost();
 
     // IMPORTANTE: por defecto NO fuerces --browser,
     // o usa "chrome" si querés un canal estable.
@@ -155,7 +166,7 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
       '@playwright/mcp@latest',
 
       '--host',
-      'localhost',
+      host,
       '--port',
       String(port),
 
@@ -191,15 +202,13 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
 
       // Host checks
       '--allowed-hosts',
-      'localhost',
-      '127.0.0.1',
+      this.getAllowedHosts(),
     ];
 
     // Opcional: reducir rarezas de SPAs
     if (this.getBlockServiceWorkers()) {
       args.push('--block-service-workers');
     }
-
 
     // Solo agregá --browser si querés canal específico
     if (browser) {
@@ -230,7 +239,7 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     );
 
     // un poco más generoso
-    await sleep(4000);
+    await sleep(10000);
   }
 
   private async safeConnectClient() {
@@ -271,39 +280,27 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
       const { Client } =
         await import('@modelcontextprotocol/sdk/client/index.js');
 
+      const { StreamableHTTPClientTransport } =
+        await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
+
       const client = new Client(
         { name: 'andeshire-playwright-client', version: '0.1.0' },
         { capabilities: {} },
       );
 
-      // 1) Intentar Streamable HTTP -> /mcp
-      try {
-        const mod =
-          await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
-        const transport = new mod.StreamableHTTPClientTransport(
-          this.getHttpUrl(),
-        );
-        await client.connect(transport);
+      const url = this.getHttpUrl();
+      this.logger.log(`Attempting MCP HTTP connect -> ${url.toString()}`);
 
-        this.client = client;
-        this.connected = true;
-        this.logger.log(
-          `Connected to Playwright MCP (HTTP) at ${this.getHttpUrl()}`,
-        );
-        return;
-      } catch (httpErr) {
-        // 2) Fallback SSE -> /sse
-        const mod = await import('@modelcontextprotocol/sdk/client/sse.js');
-        const transport = new mod.SSEClientTransport(this.getSseUrl());
-        await client.connect(transport);
+      const transport = new StreamableHTTPClientTransport(url);
+      await client.connect(transport);
 
-        this.client = client;
-        this.connected = true;
-        this.logger.log(
-          `Connected to Playwright MCP (SSE) at ${this.getSseUrl()}`,
-        );
-        return;
-      }
+      this.client = client;
+      this.connected = true;
+
+      this.logger.log(
+        `Connected to Playwright MCP (HTTP) at ${url.toString()}`,
+      );
+      return;
     } catch (err) {
       this.client = null;
       this.connected = false;
