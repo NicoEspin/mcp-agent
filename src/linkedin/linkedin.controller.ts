@@ -3,9 +3,9 @@ import { Body, Controller, Post } from '@nestjs/common';
 import { LinkedinService } from './linkedin.service';
 import { PlaywrightMcpService } from '../mcp/playwright-mcp.service';
 import { SendMessageDto } from './dto/send-message.dto';
-import { RequireLinkedinSession } from './session/require-linkedin-session.decorator';
 import { SendConnectionDto } from './dto/send-connection.dto';
 import { CheckConnectionDto } from './dto/check-connection.dto';
+import { ReadChatDto } from './dto/read-chat.dto';
 
 @Controller('linkedin')
 export class LinkedinController {
@@ -13,6 +13,15 @@ export class LinkedinController {
     private readonly linkedin: LinkedinService,
     private readonly mcp: PlaywrightMcpService,
   ) {}
+
+  @Post('read-chat')
+  async readChat(@Body() dto: ReadChatDto) {
+    return this.linkedin.readChat(
+      dto.profileUrl,
+      dto.limit ?? 30,
+      dto.threadHint,
+    );
+  }
 
   @Post('send-message')
   async sendMessage(@Body() dto: SendMessageDto) {

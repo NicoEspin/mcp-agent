@@ -16,6 +16,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PlaywrightMcpService.name);
 
+  private callSignature: 'old' | 'new' = 'old';
   private serverProcess?: ChildProcessWithoutNullStreams;
   private client: McpClient | null = null;
   private connected = false;
@@ -314,6 +315,23 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     if (this.connected) return;
     await this.connectClientWithRetry();
   }
+  async listToolDefs(force = false): Promise<any[]> {
+    await this.ensureConnected();
+
+    if (!force && this.toolsCache) return this.toolsCache;
+
+    const res = await this.listTools(); // ya setea cache internamente
+    const tools = this.extractTools(res);
+
+    this.toolsCache = tools;
+    return tools;
+  }
+
+  // ✅ Helper que tu agente necesita
+  async hasTool(name: string): Promise<boolean> {
+    const tools = await this.listToolDefs();
+    return tools.some((t: any) => t?.name === name);
+  }
 
   async listTools() {
     await this.ensureConnected();
@@ -321,11 +339,12 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
 
     let res: any;
     try {
-      // Algunas versiones nuevas aceptan objeto
+      // firmas nuevas suelen aceptar objeto
       res = await c.listTools({});
+      this.callSignature = 'new';
     } catch {
-      // Otras siguen sin args
       res = await c.listTools();
+      this.callSignature = 'old';
     }
 
     this.toolsCache = this.extractTools(res);
@@ -335,14 +354,20 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
   async callTool(name: string, args: unknown = {}) {
     await this.ensureConnected();
     const c: any = this.client!;
+    const safeArgs = args && typeof args === 'object' ? args : {};
 
-    // Firma nueva preferida
-    try {
-      return await c.callTool({ name, arguments: args });
-    } catch {
-      // Fallback firma vieja
-      return await c.callTool(name, args);
+    // Asegura que ya descubrimos firma al menos una vez
+    if (!this.toolsCache) {
+      try {
+        await this.listTools();
+      } catch {}
     }
+
+    if (this.callSignature === 'old') {
+      return await c.callTool(name, safeArgs);
+    }
+
+    return await c.callTool({ name, arguments: safeArgs });
   }
 
   private async warmupBrowser() {

@@ -261,13 +261,25 @@
 
                 <label>Nota de invitación (opcional)</label>
                 <textarea id="connectionNote" placeholder="Hola! Me gustaría conectar contigo..."></textarea>
+                <div style="height: 10px"></div>
+                <label>Limit (últimos mensajes)</label>
+                <input id="chatLimit" type="number" min="1" max="100" value="30" />
 
                 <div style="height: 12px"></div>
+                <div style="height: 10px"></div>
+
+                <label style="display:flex; align-items:center; gap:8px;">
+                    <input id="useAgent" type="checkbox" />
+                    Usar modo agente (Responses + self-heal)
+                </label>
+
+                <div style="height: 10px"></div>
 
                 <div style="display: flex; gap: 8px; flex-wrap: wrap;">
                     <button id="btnSend">Enviar mensaje</button>
                     <button id="btnConnectRequest" class="secondary">Enviar solicitud</button>
                     <button id="btnCheckConnection" class="secondary">Check conexión</button>
+                    <button id="btnReadChat" class="secondary">Leer chat</button>
                 </div>
 
 
@@ -286,6 +298,23 @@
             el.textContent =
                 typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
         }
+        function getBaseUrl() {
+            return baseUrlInput.value.trim().replace(/\/$/, "");
+        }
+
+        function isAgentMode() {
+            return !!document.getElementById("useAgent")?.checked;
+        }
+
+        function endpoint(path) {
+            // path ejemplo: "send-message", "read-chat"
+            const base = getBaseUrl();
+            const prefix = isAgentMode()
+                ? "/api/v1/linkedin/agent"
+                : "/api/v1/linkedin";
+            return `${base}${prefix}/${path}`;
+        }
+
 
         let socket = null;
         let lastFrameTs = 0;
@@ -398,7 +427,6 @@
 
         // Enviar mensaje
         document.getElementById("btnSend").addEventListener("click", async () => {
-            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
             const profileUrl = document.getElementById("profileUrl").value.trim();
             const message = document.getElementById("message").value.trim();
 
@@ -407,24 +435,24 @@
                 return;
             }
 
-            logApi("Enviando...");
+            logApi(isAgentMode() ? "Enviando (agente)..." : "Enviando...");
 
             try {
-                const res = await fetch(`${baseUrl}/api/v1/linkedin/send-message`, {
+                const res = await fetch(endpoint("send-message"), {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ profileUrl, message }),
                 });
 
                 const data = await res.json().catch(() => ({}));
-                logApi({ status: res.status, ok: res.ok, body: data });
+                logApi({ mode: isAgentMode() ? "agent" : "classic", status: res.status, ok: res.ok, body: data });
             } catch (e) {
                 logApi(String(e?.message ?? e));
             }
         });
+
         // Enviar solicitud de conexión
         document.getElementById("btnConnectRequest").addEventListener("click", async () => {
-            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
             const profileUrl = document.getElementById("profileUrl").value.trim();
             const note = document.getElementById("connectionNote").value.trim();
 
@@ -433,21 +461,22 @@
                 return;
             }
 
-            logApi("Enviando solicitud...");
+            logApi(isAgentMode() ? "Enviando solicitud (agente)..." : "Enviando solicitud...");
 
             try {
-                const res = await fetch(`${baseUrl}/api/v1/linkedin/send-connection`, {
+                const res = await fetch(endpoint("send-connection"), {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ profileUrl, note: note || undefined }),
                 });
 
                 const data = await res.json().catch(() => ({}));
-                logApi({ status: res.status, ok: res.ok, body: data });
+                logApi({ mode: isAgentMode() ? "agent" : "classic", status: res.status, ok: res.ok, body: data });
             } catch (e) {
                 logApi(String(e?.message ?? e));
             }
         });
+
         function normalizeBool(x) {
             if (typeof x === "boolean") return x;
             if (typeof x === "string") {
@@ -494,6 +523,48 @@
                     connected,
                     raw: data,
                     profileUrl,
+                });
+            } catch (e) {
+                logApi(String(e?.message ?? e));
+            }
+        });
+        // Leer chat
+        document.getElementById("btnReadChat").addEventListener("click", async () => {
+            const profileUrl = document.getElementById("profileUrl").value.trim();
+            const limitRaw = document.getElementById("chatLimit")?.value ?? "30";
+            const limit = Math.max(1, Math.min(100, Number(limitRaw || 30)));
+
+            if (!profileUrl) {
+                logApi("Falta profileUrl.");
+                return;
+            }
+
+            logApi(isAgentMode() ? "Leyendo chat (agente)..." : "Leyendo chat...");
+
+            try {
+                const res = await fetch(endpoint("read-chat"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ profileUrl, limit }),
+                });
+
+                const data = await res.json().catch(() => ({}));
+
+                const messages =
+                    data?.data?.messages ||
+                    data?.messages || // por si el agente devuelve directo
+                    data?.body?.data?.messages ||
+                    [];
+
+                logApi({
+                    mode: isAgentMode() ? "agent" : "classic",
+                    status: res.status,
+                    ok: res.ok,
+                    profileUrl,
+                    limit,
+                    messagesCount: Array.isArray(messages) ? messages.length : null,
+                    messagesPreview: Array.isArray(messages) ? messages.slice(-5) : null,
+                    body: data,
                 });
             } catch (e) {
                 logApi(String(e?.message ?? e));

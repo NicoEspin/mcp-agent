@@ -29,6 +29,197 @@ export class LinkedinService {
       []
     );
   }
+ private buildReadChatCode(
+  profileUrl: string,
+  limit: number,
+  threadHint?: string,
+) {
+  return `
+const profileUrl = ${JSON.stringify(profileUrl)};
+const limit = ${JSON.stringify(limit)};
+const threadHint = ${JSON.stringify(threadHint ?? '')};
+
+const debug = (msg) => console.log('[read-chat]', msg, 'url=', page.url());
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// -----------------------------
+// 1) Ir al perfil (más corto)
+// -----------------------------
+await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+await page.waitForTimeout(800);
+await debug('Perfil cargado');
+
+const main = page.locator('main').first();
+const topCard = main.locator('.pv-top-card, .pv-top-card-v2-ctas, .pv-top-card-v2').first();
+const scope = (await topCard.count()) ? topCard : main;
+
+// -----------------------------
+// 2) Encontrar CTA mensaje
+// -----------------------------
+const findMessageButton = async () => {
+  let loc = scope.locator(
+    'button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]'
+  ).first();
+  if (await loc.count()) return loc;
+
+  loc = main.locator(
+    'button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]'
+  ).first();
+  if (await loc.count()) return loc;
+
+  loc = scope.locator('button, a').filter({ hasText: /enviar mensaje|message/i }).first();
+  if (await loc.count()) return loc;
+
+  loc = main.locator('button, a').filter({ hasText: /enviar mensaje|message/i }).first();
+  if (await loc.count()) return loc;
+
+  return null;
+};
+
+let messageBtn = await findMessageButton();
+
+// -----------------------------
+// 3) Overflow "Más" si no hay CTA
+// -----------------------------
+if (!messageBtn) {
+  await debug('CTA mensaje no encontrado. Probando overflow del perfil');
+
+  const moreBtn = scope.locator(
+    'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
+    'button[data-view-name="profile-overflow-button"][aria-label="More"]'
+  ).first();
+
+  if (await moreBtn.count()) {
+    await moreBtn.scrollIntoViewIfNeeded();
+    await moreBtn.click({ timeout: 8000, force: true });
+    await page.waitForTimeout(200);
+
+    const msgItem = page.getByRole('menuitem', { name: /enviar mensaje|mensaje|message/i }).first();
+    if (await msgItem.count()) {
+      await msgItem.click({ timeout: 8000 });
+    } else {
+      throw new Error('No se encontró opción de mensaje en el menú Más del perfil.');
+    }
+  } else {
+    throw new Error('No se encontró CTA de mensaje ni overflow del perfil.');
+  }
+} else {
+  const aria = (await messageBtn.getAttribute('aria-label')) ?? '';
+  if (/para negocios|for business/i.test(aria)) {
+    throw new Error('Selector de mensaje resolvió a un botón del header. Ajustar scope.');
+  }
+
+  await debug('Click CTA Enviar mensaje');
+  await messageBtn.scrollIntoViewIfNeeded();
+  await messageBtn.click({ timeout: 8000, force: true });
+}
+
+// -----------------------------
+// 4) Esperar wrapper del overlay (TU estructura real)
+// -----------------------------
+await page.waitForTimeout(500);
+
+const overlayWrapper = page
+  .locator('.msg-overlay-conversation-bubble__content-wrapper')
+  .last();
+
+const inlineList = page
+  .locator('.msg-s-message-list')
+  .last();
+
+// Espera rápida y con fallback
+let root = null;
+
+try {
+  await overlayWrapper.waitFor({ state: 'visible', timeout: 6000 });
+  root = overlayWrapper;
+  await debug('Overlay wrapper detectado');
+} catch {
+  await inlineList.waitFor({ state: 'visible', timeout: 6000 });
+  root = inlineList;
+  await debug('Inline message list detectado');
+}
+
+if (!root) throw new Error('No se detectó contenedor de conversación.');
+
+// -----------------------------
+// 5) Extracción rápida por eventos
+// -----------------------------
+const payload = await root.evaluate(() => {
+  const norm = (s) => (s ?? '').replace(/\\s+/g, ' ').trim();
+
+  // El UL vive dentro de .msg-s-message-list
+  const events = Array.from(
+    document.querySelectorAll('li.msg-s-message-list__event')
+  );
+
+  // Cap duro para evitar timeouts por DOM gigante
+  const capped = events.slice(0, 160);
+
+  const msgs = [];
+
+  for (const li of capped) {
+    const nameEl = li.querySelector('.msg-s-message-group__name');
+    const timeEl = li.querySelector('time.msg-s-message-group__timestamp');
+    const bodyEl = li.querySelector('p.msg-s-event-listitem__body');
+
+    const text = norm(bodyEl?.textContent);
+    if (!text) continue;
+
+    // El link suele ser ancestor del span name
+    const linkEl =
+      nameEl?.closest('a') ||
+      li.querySelector('a.msg-s-message-group__profile-link') ||
+      li.querySelector('a[data-test-app-aware-link]');
+
+    msgs.push({
+      senderName: norm(nameEl?.textContent) || null,
+      senderProfileUrl: linkEl?.getAttribute('href') || null,
+      time: norm(timeEl?.textContent) || null,
+      text,
+    });
+  }
+
+  // Dedupe simple
+  const seen = new Set();
+  const deduped = [];
+  for (const m of msgs) {
+    const key = [m.senderName ?? '', m.time ?? '', m.text ?? ''].join('||');
+    if (seen.has(key)) continue;
+    seen.add(key);
+    deduped.push(m);
+  }
+
+  // Detectar si el contenedor está “column-reversed”
+  const reversed = !!document.querySelector('.msg-s-message-list-container--column-reversed');
+
+  const ordered = reversed ? deduped.reverse() : deduped;
+
+  return {
+    ok: true,
+    totalFound: ordered.length,
+    reversed,
+    messages: ordered,
+  };
+});
+
+let msgs = Array.isArray(payload?.messages) ? payload.messages : [];
+if (msgs.length > limit) msgs = msgs.slice(-limit);
+
+const result = {
+  ok: true,
+  limit,
+  totalFound: payload?.totalFound ?? msgs.length,
+  reversed: payload?.reversed ?? false,
+  extractedAt: new Date().toISOString(),
+  threadHint: threadHint || undefined,
+  messages: msgs,
+};
+
+return JSON.stringify(result);
+`;
+}
+
 
   private async hasTool(name: string) {
     const res = await this.mcp.listTools();
@@ -163,6 +354,62 @@ Pistas visuales típicas:
     // Por seguridad funcional: si no estamos seguros, asumimos NO conectado.
     return false;
   }
+  async readChat(profileUrl: string, limit = 30, threadHint?: string) {
+    const canRunCode = await this.hasTool('browser_run_code');
+
+    if (!canRunCode) {
+      // Fallback opcional: snapshot si existiera
+      const canSnapshot = await this.hasTool('browser_snapshot');
+      if (!canSnapshot) {
+        return {
+          ok: false,
+          error:
+            'Tu servidor MCP no expone browser_run_code ni browser_snapshot. Actualizá @playwright/mcp.',
+        };
+      }
+
+      // En un primer MVP, si no hay run_code, devolvé error claro.
+      return {
+        ok: false,
+        error:
+          'Modo snapshot-only no implementado aún para read-chat. Requiere browser_run_code para abrir la conversación de forma fiable.',
+      };
+    }
+
+    const code = this.buildReadChatCode(profileUrl, limit, threadHint);
+
+    try {
+      const result: any = await this.mcp.callTool('browser_run_code', { code });
+
+      if (result?.isError) {
+        return {
+          ok: false,
+          error: 'Playwright MCP error en browser_run_code',
+          detail: result?.content ?? result,
+        };
+      }
+
+      const txt = this.extractFirstText(result) ?? '';
+      let parsed: any = null;
+
+      try {
+        parsed = JSON.parse(txt);
+      } catch {
+        // si el script decidió loguear algo textual
+      }
+
+      return {
+        ok: true,
+        profileUrl,
+        limit,
+        data: parsed ?? { raw: txt },
+        toolResult: result,
+      };
+    } catch (e: any) {
+      this.logger.warn(`readChat failed: ${e?.message ?? e}`);
+      return { ok: false, error: e?.message ?? 'Unknown error' };
+    }
+  }
 
   async sendMessage(profileUrl: string, message: string) {
     const canRunCode = await this.hasTool('browser_run_code');
@@ -176,235 +423,243 @@ Pistas visuales típicas:
     }
 
     const code = `
-  const profileUrl = ${JSON.stringify(profileUrl)};
-  const text = ${JSON.stringify(message)};
+const profileUrl = ${JSON.stringify(profileUrl)};
+const text = ${JSON.stringify(message)};
 
-  const debug = async (msg) => {
-    console.log('[send-message]', msg, 'url=', page.url());
-  };
+const debug = async (msg) => {
+  console.log('[send-message]', msg, 'url=', page.url());
+};
 
-  // 1) Ir al perfil
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-  await page.waitForTimeout(1200);
-  await debug('Perfil cargado');
+// 1) Ir al perfil
+await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+await page.waitForTimeout(1200);
+await debug('Perfil cargado');
 
-  // ---------- Helpers ----------
-  const main = page.locator('main');
+// ---------- Helpers ----------
+const main = page.locator('main').first();
 
-  // Scope preferido: top card / acciones de perfil si existe
-  const topCard =
-    main.locator('[data-view-name*="profile"], .pv-top-card, .pv-top-card-v2-ctas').first();
+// Scope preferido: top card / acciones de perfil si existe
+// (Saco el data-view-name*="profile" para evitar scopes demasiado chicos)
+const topCard =
+  main.locator('.pv-top-card, .pv-top-card-v2-ctas, .pv-top-card-v2').first();
 
-  const scope = (await topCard.count()) ? topCard : main;
+const scope = (await topCard.count()) ? topCard : main;
 
-  // Encuentra el clickable más cercano del ícono de enviar mensaje
-  const getClickableFromIcon = async () => {
-    const icon = scope.locator('svg#send-privately-medium').first();
-    if (!(await icon.count())) return null;
+// ---------- 2) Encontrar CTA "Enviar mensaje" (según tu HTML real) ----------
+const findMessageButton = async () => {
+  // 1) Más directo: aria-label del botón real
+  let loc = scope.locator(
+    'button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]'
+  ).first();
+  if (await loc.count()) return loc;
 
-    const btnAncestor = icon.locator('xpath=ancestor::button[1]');
-    if (await btnAncestor.count()) return btnAncestor;
+  // 1.b) Si el scope no lo ve, probar en main
+  loc = main.locator(
+    'button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]'
+  ).first();
+  if (await loc.count()) return loc;
 
-    const linkAncestor = icon.locator('xpath=ancestor::a[1]');
-    if (await linkAncestor.count()) return linkAncestor;
+  // 2) Por texto visible del botón
+  loc = scope.locator('button, a').filter({
+    hasText: /enviar mensaje|message/i,
+  }).first();
+  if (await loc.count()) return loc;
 
-    // Último fallback: algún contenedor clickable cercano
-    const genericAncestor = icon.locator(
-      'xpath=ancestor::*[self::span or self::div][1]'
-    );
-    if (await genericAncestor.count()) return genericAncestor;
+  // 2.b) Fallback en main
+  loc = main.locator('button, a').filter({
+    hasText: /enviar mensaje|message/i,
+  }).first();
+  if (await loc.count()) return loc;
 
-    return null;
-  };
+  // 3) Por icono real <use href="#send-privately-small">
+  const icon = scope.locator(
+    'use[href="#send-privately-small"], use[href="#send-privately-medium"], ' +
+    'svg[data-test-icon="send-privately-small"], svg[data-test-icon="send-privately-medium"]'
+  ).first();
 
-  // ---------- 2) Click CTA "Enviar mensaje" ----------
-  let messageBtn = await getClickableFromIcon();
+  if (await icon.count()) {
+    const btn = icon.locator('xpath=ancestor::button[1]').first();
+    if (await btn.count()) return btn;
+  }
 
-  // Fallback B (más seguro): botón con texto "Enviar mensaje" dentro del scope, NO global
-  if (!messageBtn) {
-    const byText = scope.locator('button, a').filter({
-      hasText: /enviar mensaje|message/i,
+  // 3.b) Fallback de icono en main
+  const icon2 = main.locator(
+    'use[href="#send-privately-small"], use[href="#send-privately-medium"], ' +
+    'svg[data-test-icon="send-privately-small"], svg[data-test-icon="send-privately-medium"]'
+  ).first();
+
+  if (await icon2.count()) {
+    const btn = icon2.locator('xpath=ancestor::button[1]').first();
+    if (await btn.count()) return btn;
+  }
+
+  return null;
+};
+
+let messageBtn = await findMessageButton();
+
+// ---------- 3) Fallback controlado: "Más" del perfil ----------
+if (!messageBtn) {
+  await debug('CTA no encontrado. Probando overflow del perfil');
+
+  const moreBtn = scope.locator(
+    'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
+    'button[data-view-name="profile-overflow-button"][aria-label="More"]'
+  ).first();
+
+  if (await moreBtn.count()) {
+    await moreBtn.scrollIntoViewIfNeeded();
+    await moreBtn.click({ timeout: 15000, force: true });
+    await page.waitForTimeout(250);
+
+    const msgItem = page.getByRole('menuitem', {
+      name: /enviar mensaje|mensaje|message/i,
     }).first();
 
-    if (await byText.count()) messageBtn = byText;
-  }
-
-  // ---------- 3) Fallback controlado: "Más" del perfil ----------
-  if (!messageBtn) {
-    await debug('CTA no encontrado. Probando overflow del perfil');
-
-    // MUY IMPORTANTE: selector hiper específico del overflow del perfil
-    const moreBtn = scope.locator(
-      'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
-      'button[data-view-name="profile-overflow-button"][aria-label="More"]'
-    ).first();
-
-    if (await moreBtn.count()) {
-      await moreBtn.scrollIntoViewIfNeeded();
-      await moreBtn.click({ timeout: 15000, force: true });
-      await page.waitForTimeout(250);
-
-      // Item de menú de mensaje dentro del contexto del menú abierto
-      const msgItem = page.getByRole('menuitem', {
-        name: /enviar mensaje|mensaje|message/i,
-      }).first();
-
-      if (await msgItem.count()) {
-        await msgItem.click({ timeout: 15000 });
-      } else {
-        throw new Error('No se encontró opción de mensaje en el menú Más del perfil.');
-      }
+    if (await msgItem.count()) {
+      await msgItem.click({ timeout: 15000 });
     } else {
-      throw new Error('No se encontró CTA de mensaje ni overflow del perfil.');
+      throw new Error('No se encontró opción de mensaje en el menú Más del perfil.');
     }
   } else {
-    // Antes de clickear, doble guard simple anti-header
-    const aria = (await messageBtn.getAttribute('aria-label')) ?? '';
-    if (/para negocios|for business/i.test(aria)) {
-      throw new Error('Selector de mensaje resolvió a un botón del header. Ajustar scope.');
-    }
-
-    await debug('Click CTA Enviar mensaje (scoped)');
-    await messageBtn.scrollIntoViewIfNeeded();
-    await messageBtn.click({ timeout: 15000, force: true });
+    throw new Error('No se encontró CTA de mensaje ni overflow del perfil.');
+  }
+} else {
+  // Guard anti-header
+  const aria = (await messageBtn.getAttribute('aria-label')) ?? '';
+  if (/para negocios|for business/i.test(aria)) {
+    throw new Error('Selector de mensaje resolvió a un botón del header. Ajustar scope.');
   }
 
-   // ---------- 4) Esperar drawer + textbox (más robusto) ----------
-  const waitForMessageBox = async (timeout = 12000) => {
-    const start = Date.now();
+  await debug('Click CTA Enviar mensaje');
+  await messageBtn.scrollIntoViewIfNeeded();
+  await messageBtn.click({ timeout: 15000, force: true });
+}
 
-    while (Date.now() - start < timeout) {
-      // 1) Selector exacto de LinkedIn
-      let candidate = page
-        .locator(
-          'div.msg-form__contenteditable[role="textbox"][contenteditable="true"]'
-        )
-        .first();
+// ---------- 4) Esperar drawer + textbox (según tu textarea real) ----------
+const waitForMessageBox = async (timeout = 12000) => {
+  const start = Date.now();
 
-      if ((await candidate.count()) && (await candidate.isVisible())) {
-        return candidate;
-      }
+  while (Date.now() - start < timeout) {
+    let candidate = page
+      .locator(
+        'div.msg-form__contenteditable[role="textbox"][contenteditable="true"]'
+      )
+      .first();
 
-      // 2) Fallback accesible por label
-      candidate = page
-        .getByRole('textbox', {
-          name: /escribe un mensaje|write a message/i,
-        })
-        .first();
-
-      if ((await candidate.count()) && (await candidate.isVisible())) {
-        return candidate;
-      }
-
-      await page.waitForTimeout(200);
+    if ((await candidate.count()) && (await candidate.isVisible())) {
+      return candidate;
     }
 
-    return null;
-  };
+    candidate = page
+      .getByRole('textbox', {
+        name: /escribe un mensaje|write a message/i,
+      })
+      .first();
 
-  // Pequeño buffer inicial tras el click del CTA/menú
-  await page.waitForTimeout(900);
+    if ((await candidate.count()) && (await candidate.isVisible())) {
+      return candidate;
+    }
 
-  const box = await waitForMessageBox();
-  if (!box) {
-    throw new Error('No se encontró el textarea de mensajes.');
+    await page.waitForTimeout(200);
   }
 
+  return null;
+};
 
-  await box.click({ timeout: 15000 });
+await page.waitForTimeout(900);
 
-  // contenteditable: priorizar type para disparar eventos reales
-  await box.type(text, { delay: 5 }).catch(async () => {
-    await box.fill(text);
-  });
+const box = await waitForMessageBox();
+if (!box) {
+  throw new Error('No se encontró el textarea de mensajes.');
+}
 
-  await debug('Mensaje escrito');
+await box.click({ timeout: 15000 });
 
-  // pequeño respiro para que LinkedIn habilite el submit
-  await page.waitForTimeout(250);
+// contenteditable: priorizar type para disparar eventos reales
+await box.type(text, { delay: 5 }).catch(async () => {
+  await box.fill(text);
+});
 
-  // ---------- 6) Botón Enviar real (scoped al form del textbox) ----------
+await debug('Mensaje escrito');
+await page.waitForTimeout(250);
 
-  // Helper: esperar a que un locator esté visible y habilitado
-  const waitEnabled = async (loc, timeout = 15000) => {
-    const start = Date.now();
-    while (Date.now() - start < timeout) {
+// ---------- 6) Botón Enviar real ----------
+const waitEnabled = async (loc, timeout = 15000) => {
+  const start = Date.now();
+  while (Date.now() - start < timeout) {
+    try {
+      if (
+        (await loc.count()) &&
+        (await loc.isVisible()) &&
+        (await loc.isEnabled())
+      ) {
+        return true;
+      }
+    } catch {}
+    await page.waitForTimeout(120);
+  }
+  return false;
+};
+
+// 6.1) Intentar obtener el form real desde el textbox
+let form = box.locator('xpath=ancestor::form[1]');
+if (!(await form.count())) {
+  form = page.locator('form.msg-form, form[data-view-name*="message"]').last();
+}
+
+// 6.2) Buscar botón Enviar dentro del form
+let sendBtn = form.locator('button.msg-form__send-button[type="submit"]').first();
+
+if (!(await sendBtn.count())) {
+  sendBtn = form.locator('button[type="submit"]').filter({ hasText: /enviar/i }).first();
+}
+
+// 6.3) Si el botón no está habilitado, forzar eventos
+if (await sendBtn.count()) {
+  const enabled = await waitEnabled(sendBtn, 4000);
+
+  if (!enabled) {
+    await debug('Send button parece deshabilitado, forzando input events');
+
+    await box.evaluate((el) => {
       try {
-        if (
-          (await loc.count()) &&
-          (await loc.isVisible()) &&
-          (await loc.isEnabled())
-        ) {
-          return true;
-        }
-      } catch {}
-      await page.waitForTimeout(120);
-    }
-    return false;
-  };
+        el.dispatchEvent(new InputEvent('input', { bubbles: true }));
+      } catch {
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+      el.dispatchEvent(new Event('keyup', { bubbles: true }));
+    });
 
-  // 6.1) Intentar obtener el form real desde el textbox
-  let form = box.locator('xpath=ancestor::form[1]');
-  if (!(await form.count())) {
-    // fallback: forms de mensajes típicos
-    form = page.locator('form.msg-form, form[data-view-name*="message"]').last();
+    await page.waitForTimeout(250);
   }
+}
 
-  // 6.2) Buscar botón Enviar dentro del form
-  let sendBtn = form.locator('button.msg-form__send-button[type="submit"]').first();
+// 6.4) Click con espera más generosa
+if (await sendBtn.count()) {
+  await sendBtn.scrollIntoViewIfNeeded();
+  const ok = await waitEnabled(sendBtn, 8000);
 
-  if (!(await sendBtn.count())) {
-    // fallback por submit + texto
-    sendBtn = form.locator('button[type="submit"]').filter({ hasText: /enviar/i }).first();
-  }
-
-  // 6.3) Si el botón no está habilitado, puede ser que el contenteditable
-  // no haya disparado input correctamente. Forzamos eventos.
-  if (await sendBtn.count()) {
-    const enabled = await waitEnabled(sendBtn, 4000);
-
-    if (!enabled) {
-      await debug('Send button parece deshabilitado, forzando input events');
-
-      await box.evaluate((el) => {
-        try {
-          el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-        } catch {
-          el.dispatchEvent(new Event('input', { bubbles: true }));
-        }
-        el.dispatchEvent(new Event('change', { bubbles: true }));
-        el.dispatchEvent(new Event('keyup', { bubbles: true }));
-      });
-
-      await page.waitForTimeout(250);
-    }
-  }
-
-  // 6.4) Click con espera más generosa
-  if (await sendBtn.count()) {
-    await sendBtn.scrollIntoViewIfNeeded();
-    const ok = await waitEnabled(sendBtn, 8000);
-
-    if (ok) {
-      await debug('Click Enviar (form-scoped)');
-      await sendBtn.click({ timeout: 15000, force: true });
-    } else {
-      await debug('Send button no habilitó, fallback Enter');
-      await page.keyboard.press('Enter');
-    }
+  if (ok) {
+    await debug('Click Enviar (form-scoped)');
+    await sendBtn.click({ timeout: 15000, force: true });
   } else {
-    // fallback global por si el form cambió
-    const globalSend = page.locator('button.msg-form__send-button').last();
-    if (await globalSend.count()) {
-      await globalSend.scrollIntoViewIfNeeded();
-      await globalSend.click({ timeout: 15000, force: true });
-    } else {
-      await page.keyboard.press('Enter');
-    }
+    await debug('Send button no habilitó, fallback Enter');
+    await page.keyboard.press('Enter');
   }
+} else {
+  const globalSend = page.locator('button.msg-form__send-button').last();
+  if (await globalSend.count()) {
+    await globalSend.scrollIntoViewIfNeeded();
+    await globalSend.click({ timeout: 15000, force: true });
+  } else {
+    await page.keyboard.press('Enter');
+  }
+}
 
-  await page.waitForTimeout(400);
-  await debug('Acción de envío ejecutada');
+await page.waitForTimeout(400);
+await debug('Acción de envío ejecutada');
 `;
 
     try {
@@ -434,6 +689,7 @@ Pistas visuales típicas:
       return { ok: false, error: e?.message ?? 'Unknown error' };
     }
   }
+
   // ----------------------------
   // NUEVO
   // ----------------------------
