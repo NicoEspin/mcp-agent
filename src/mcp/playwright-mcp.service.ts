@@ -284,24 +284,43 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
       const { StreamableHTTPClientTransport } =
         await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
 
+      const { SSEClientTransport } =
+        await import('@modelcontextprotocol/sdk/client/sse.js');
+
       const client = new Client(
         { name: 'andeshire-playwright-client', version: '0.1.0' },
         { capabilities: {} },
       );
 
-      const url = this.getHttpUrl();
-      this.logger.log(`Attempting MCP HTTP connect -> ${url.toString()}`);
+      const httpUrl = this.getHttpUrl();
+      const sseUrl = this.getSseUrl();
 
-      const transport = new StreamableHTTPClientTransport(url);
-      await client.connect(transport);
+      this.logger.log(`Attempting MCP HTTP connect -> ${httpUrl.toString()}`);
 
-      this.client = client;
-      this.connected = true;
+      try {
+        const transport = new StreamableHTTPClientTransport(httpUrl);
+        await client.connect(transport);
 
-      this.logger.log(
-        `Connected to Playwright MCP (HTTP) at ${url.toString()}`,
-      );
-      return;
+        this.client = client;
+        this.connected = true;
+        this.logger.log(
+          `Connected to Playwright MCP (HTTP) at ${httpUrl.toString()}`,
+        );
+        return;
+      } catch (e) {
+        this.logger.warn(
+          `HTTP transport failed, trying SSE -> ${sseUrl.toString()}`,
+        );
+        const transport = new SSEClientTransport(sseUrl);
+        await client.connect(transport);
+
+        this.client = client;
+        this.connected = true;
+        this.logger.log(
+          `Connected to Playwright MCP (SSE) at ${sseUrl.toString()}`,
+        );
+        return;
+      }
     } catch (err) {
       this.client = null;
       this.connected = false;
