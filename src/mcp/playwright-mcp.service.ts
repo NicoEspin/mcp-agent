@@ -546,4 +546,38 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
   getCachedTools() {
     return this.toolsCache ?? [];
   }
+
+  // ----------------------------------------------------
+  // Gestión de sesiones - Stop session
+  // ----------------------------------------------------
+  async stopSession(sessionId: SessionId): Promise<{ success: boolean; message: string }> {
+    const session = this.sessions.get(sessionId);
+    
+    if (!session) {
+      return {
+        success: false,
+        message: `Session "${sessionId}" not found`,
+      };
+    }
+
+    try {
+      if (session.client && session.connected) {
+        await session.client.close?.();
+      }
+      
+      this.sessions.delete(sessionId);
+      
+      this.logger.log(`Session "${sessionId}" stopped successfully`);
+      return {
+        success: true,
+        message: `Session "${sessionId}" stopped successfully`,
+      };
+    } catch (error: any) {
+      this.logger.error(`Failed to stop session "${sessionId}": ${error?.message ?? error}`);
+      return {
+        success: false,
+        message: `Failed to stop session "${sessionId}": ${error?.message ?? 'Unknown error'}`,
+      };
+    }
+  }
 }

@@ -1,7 +1,8 @@
 // src/linkedin/linkedin.controller.ts
-import { Body, Controller, Post } from '@nestjs/common';
+import { Body, Controller, Post, Get, Query } from '@nestjs/common';
 import { LinkedinService } from './linkedin.service';
 import { PlaywrightMcpService } from '../mcp/playwright-mcp.service';
+import { LinkedinSessionService } from './session/linkedin-session.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { SendConnectionDto } from './dto/send-connection.dto';
 import { CheckConnectionDto } from './dto/check-connection.dto';
@@ -12,6 +13,7 @@ export class LinkedinController {
   constructor(
     private readonly linkedin: LinkedinService,
     private readonly mcp: PlaywrightMcpService,
+    private readonly sessionService: LinkedinSessionService,
   ) {}
 
   // -------------------
@@ -77,5 +79,28 @@ export class LinkedinController {
     return this.mcp.callTool(sessionId, 'browser_navigate', {
       url: 'https://www.linkedin.com/',
     });
+  }
+
+  // -------------------
+  // session-state (GET)
+  // -------------------
+  @Get('session-state')
+  async getSessionState(@Query('sessionId') sessionId?: string) {
+    const id = sessionId ?? 'default';
+    return this.sessionService.checkLoggedIn(id);
+  }
+
+  // -------------------
+  // stop-session (POST)
+  // -------------------
+  @Post('stop-session')
+  async stopSession(
+    @Body()
+    body: {
+      sessionId?: string;
+    },
+  ) {
+    const sessionId = body?.sessionId ?? 'default';
+    return this.mcp.stopSession(sessionId);
   }
 }
