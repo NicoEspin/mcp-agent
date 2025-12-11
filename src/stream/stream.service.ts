@@ -1,6 +1,8 @@
 // src/stream/stream.service.ts
-import { Injectable, Logger } from "@nestjs/common";
-import { PlaywrightMcpService } from "../mcp/playwright-mcp.service";
+import { Injectable, Logger } from '@nestjs/common';
+import { PlaywrightMcpService } from '../mcp/playwright-mcp.service';
+
+type SessionId = string;
 
 type ScreenshotResult = { data: string; mimeType: string };
 type CachedScreenshot = ScreenshotResult & { ts: number };
@@ -8,10 +10,12 @@ type CachedScreenshot = ScreenshotResult & { ts: number };
 @Injectable()
 export class StreamService {
   private readonly logger = new Logger(StreamService.name);
+
   private screenshotToolName: string | null = null;
 
-  private lastFrame: CachedScreenshot | null = null;
-  private inFlight: Promise<ScreenshotResult> | null = null;
+  // Cache por sesión
+  private lastFrames = new Map<SessionId, CachedScreenshot>();
+  private inFlight = new Map<SessionId, Promise<ScreenshotResult>>();
 
   constructor(private readonly mcp: PlaywrightMcpService) {}
 
@@ -28,16 +32,17 @@ export class StreamService {
   private async resolveScreenshotToolName(): Promise<string> {
     if (this.screenshotToolName) return this.screenshotToolName;
 
-    let name = "browser_take_screenshot";
+    let name = 'browser_take_screenshot';
 
     try {
+      // Usamos sesión "default" porque la lista de tools es global
       const res = await this.mcp.listTools();
       const tools = this.extractTools(res);
 
       const found = tools.find(
         (t: any) =>
-          typeof t?.name === "string" &&
-          t.name.toLowerCase().includes("screenshot")
+          typeof t?.name === 'string' &&
+          t.name.toLowerCase().includes('screenshot'),
       );
 
       if (found?.name) name = found.name;
@@ -55,59 +60,71 @@ export class StreamService {
 
     const img = Array.isArray(content)
       ? content.find(
-          (c: any) => c?.type === "image" && typeof c?.data === "string"
+          (c: any) => c?.type === 'image' && typeof c?.data === 'string',
         )
       : null;
 
     if (img) {
       return {
         data: img.data,
-        mimeType: img.mimeType ?? "image/png",
+        mimeType: img.mimeType ?? 'image/png',
       };
     }
 
-    if (typeof resp?.data === "string") {
-      return { data: resp.data, mimeType: "image/png" };
+    if (typeof resp?.data === 'string') {
+      return { data: resp.data, mimeType: 'image/png' };
     }
 
     return null;
   }
 
-  async getScreenshotBase64(): Promise<ScreenshotResult> {
+  async getScreenshotBase64(
+    sessionId: SessionId = 'default',
+  ): Promise<ScreenshotResult> {
     // Evita tormenta de screenshots si hay varios consumidores a la vez
-    if (this.inFlight) return this.inFlight;
+    const existing = this.inFlight.get(sessionId);
+    if (existing) return existing;
 
-    this.inFlight = (async () => {
+    const promise = (async () => {
       const toolName = await this.resolveScreenshotToolName();
 
       const args = {
-        type: "jpeg",
+        type: 'jpeg',
         fullPage: false,
       };
 
-      const res = await this.mcp.callTool(toolName, args);
+      // IMPORTANT: ahora usamos la sesión específica
+      const res = await this.mcp.callTool(sessionId, toolName, args);
       const img = this.extractImageContent(res);
 
       if (!img) {
-        throw new Error("MCP screenshot tool did not return image content");
+        throw new Error('MCP screenshot tool did not return image content');
       }
 
-      this.lastFrame = { ...img, ts: Date.now() };
+      this.lastFrames.set(sessionId, { ...img, ts: Date.now() });
       return img;
     })();
 
+    this.inFlight.set(sessionId, promise);
+
     try {
-      return await this.inFlight;
+      return await promise;
     } finally {
-      this.inFlight = null;
+      this.inFlight.delete(sessionId);
     }
   }
 
-  async getCachedScreenshotBase64(maxAgeMs = 800): Promise<ScreenshotResult> {
-    if (this.lastFrame && Date.now() - this.lastFrame.ts <= maxAgeMs) {
-      const { data, mimeType } = this.lastFrame;
+  async getCachedScreenshotBase64(
+    sessionId: SessionId = 'default',
+    maxAgeMs = 800,
+  ): Promise<ScreenshotResult> {
+    const last = this.lastFrames.get(sessionId);
+
+    if (last && Date.now() - last.ts <= maxAgeMs) {
+      const { data, mimeType } = last;
       return { data, mimeType };
     }
-    return this.getScreenshotBase64();
+
+    return this.getScreenshotBase64(sessionId);
   }
 }

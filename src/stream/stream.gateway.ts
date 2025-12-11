@@ -9,6 +9,8 @@ import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { StreamService } from './stream.service';
 
+type SessionId = string;
+
 @WebSocketGateway({
   namespace: '/stream',
   cors: {
@@ -38,13 +40,24 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     const intervalMs = Math.max(200, Math.floor(1000 / fps));
 
-    this.logger.log(`Client connected ${client.id} (fps=${fps})`);
-    this.streamService.getScreenshotBase64().catch(() => {});
+    // sessionId por querystring: io(".../stream", { query: { sessionId: "recruiter-1" } })
+    const rawSession = client.handshake.query?.sessionId;
+    const sessionIdRaw = Array.isArray(rawSession) ? rawSession[0] : rawSession;
+    const sessionId: SessionId =
+      (sessionIdRaw && String(sessionIdRaw)) || 'default';
+
+    this.logger.log(
+      `Client connected ${client.id} (fps=${fps}, sessionId=${sessionId})`,
+    );
+
+    // Primer frame en caliente
+    this.streamService.getScreenshotBase64(sessionId).catch(() => {});
 
     const timer = setInterval(async () => {
       try {
         const { data, mimeType } =
-          await this.streamService.getScreenshotBase64();
+          await this.streamService.getScreenshotBase64(sessionId);
+
         client.emit('frame', {
           data,
           mimeType,

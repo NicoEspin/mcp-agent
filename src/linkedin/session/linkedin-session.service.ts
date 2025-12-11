@@ -12,12 +12,15 @@ export interface LinkedinSessionCheck {
   reason?: string;
   checkedAt: number;
   imageMimeType?: string;
+  sessionId?: string; // <- para trazabilidad
 }
 
 @Injectable()
 export class LinkedinSessionService {
   private readonly logger = new Logger(LinkedinSessionService.name);
-  private lastCheck: LinkedinSessionCheck | null = null;
+
+  // En vez de un solo lastCheck, cache por sesión
+  private lastChecks = new Map<string, LinkedinSessionCheck>();
 
   constructor(
     private readonly config: ConfigService,
@@ -90,6 +93,7 @@ No incluyas texto fuera del JSON.
   }
 
   private extractAssistantText(resp: any): string {
+    // Formato nuevo de /responses
     if (typeof resp?.output_text === 'string') return resp.output_text;
 
     const output = resp?.output;
@@ -120,35 +124,43 @@ No incluyas texto fuera del JSON.
       }
     }
   }
-  // dentro de LinkedinSessionService
 
-private buildSessionSchema() {
-  return {
-    type: "object",
-    additionalProperties: false,
-    properties: {
-      isLoggedIn: { type: "boolean" },
-      confidence: { type: "number" },
-      signals: { type: "array", items: { type: "string" } },
-      reason: { type: "string" },
-    },
-    required: ["isLoggedIn", "confidence", "signals", "reason"],
-  };
-}
+  // -------------------------
+  // Nuevos helpers de schema
+  // -------------------------
+  private buildSessionSchema() {
+    return {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        isLoggedIn: { type: 'boolean' },
+        confidence: { type: 'number' },
+        signals: { type: 'array', items: { type: 'string' } },
+        reason: { type: 'string' },
+      },
+      required: ['isLoggedIn', 'confidence', 'signals', 'reason'],
+    };
+  }
 
-private buildTextFormat() {
-  return {
-    type: "json_schema",
-    name: "linkedin_session_check",
-    strict: true,
-    schema: this.buildSessionSchema(),
-  };
-}
+  private buildTextFormat() {
+    return {
+      type: 'json_schema',
+      name: 'linkedin_session_check',
+      strict: true,
+      schema: this.buildSessionSchema(),
+    };
+  }
 
-
-  async checkLoggedIn(force = false): Promise<LinkedinSessionCheck> {
-    if (!force && this.lastCheck && this.isFresh(this.lastCheck)) {
-      return this.lastCheck;
+  // -------------------------
+  // checkLoggedIn multi-sesión
+  // -------------------------
+  async checkLoggedIn(
+    sessionId = 'default',
+    force = false,
+  ): Promise<LinkedinSessionCheck> {
+    const prev = this.lastChecks.get(sessionId);
+    if (!force && prev && this.isFresh(prev)) {
+      return prev;
     }
 
     const apiKey = this.getOpenAIKey();
@@ -160,45 +172,49 @@ private buildTextFormat() {
         signals: ['missing_openai_key'],
         reason: 'OPENAI_API_KEY no configurada',
         checkedAt: Date.now(),
+        sessionId,
       };
-      this.lastCheck = fallback;
+      this.lastChecks.set(sessionId, fallback);
       return fallback;
     }
 
-    // ✅ Opcional y desactivado por defecto:
+    // ✅ Opcional: pre-navigate por sesión
     if (this.preNavigateEnabled()) {
       try {
-        await this.mcp.callTool('browser_navigate', {
+        await this.mcp.callTool(sessionId, 'browser_navigate', {
           url: this.getPreNavigateUrl(),
         });
-        // mini espera para estabilizar UI
         await new Promise((r) => setTimeout(r, 800));
       } catch (e: any) {
-        this.logger.warn(`Session pre-navigate failed: ${e?.message ?? e}`);
+        this.logger.warn(
+          `Session pre-navigate failed [${sessionId}]: ${e?.message ?? e}`,
+        );
       }
     }
 
-    // ✅ Ideal: reusar frame reciente del stream
-    const { data, mimeType } = await this.stream.getCachedScreenshotBase64(800);
+    // ✅ Reusar frame reciente del stream para ESA sesión
+    const { data, mimeType } = await this.stream.getCachedScreenshotBase64(
+      sessionId,
+      800,
+    );
     const dataUrl = `data:${mimeType};base64,${data}`;
 
-   const body: any = {
-  model: this.getVisionModel(),
-  input: [
-    {
-      role: "user",
-      content: [
-        { type: "input_text", text: this.buildPrompt() },
-        { type: "input_image", image_url: dataUrl, detail: "low" },
+    const body: any = {
+      model: this.getVisionModel(),
+      input: [
+        {
+          role: 'user',
+          content: [
+            { type: 'input_text', text: this.buildPrompt() },
+            { type: 'input_image', image_url: dataUrl, detail: 'low' },
+          ],
+        },
       ],
-    },
-  ],
-  text: {
-    format: this.buildTextFormat(),
-  },
-  max_output_tokens: 200,
-};
-
+      text: {
+        format: this.buildTextFormat(),
+      },
+      max_output_tokens: 200,
+    };
 
     let raw: any;
     try {
@@ -222,8 +238,9 @@ private buildTextFormat() {
           reason: raw?.error?.message ?? `OpenAI error ${res.status}`,
           checkedAt: Date.now(),
           imageMimeType: mimeType,
+          sessionId,
         };
-        this.lastCheck = errCheck;
+        this.lastChecks.set(sessionId, errCheck);
         return errCheck;
       }
     } catch (e: any) {
@@ -235,8 +252,9 @@ private buildTextFormat() {
         reason: e?.message ?? 'OpenAI network error',
         checkedAt: Date.now(),
         imageMimeType: mimeType,
+        sessionId,
       };
-      this.lastCheck = errCheck;
+      this.lastChecks.set(sessionId, errCheck);
       return errCheck;
     }
 
@@ -252,6 +270,7 @@ private buildTextFormat() {
       reason: typeof parsed?.reason === 'string' ? parsed.reason : undefined,
       checkedAt: Date.now(),
       imageMimeType: mimeType,
+      sessionId,
     };
 
     if (this.strictMode() && !parsed) {
@@ -263,10 +282,10 @@ private buildTextFormat() {
         'El modelo no devolvió JSON parseable para la validación de sesión';
     }
 
-    this.lastCheck = check;
+    this.lastChecks.set(sessionId, check);
 
     this.logger.log(
-      `LinkedIn session check -> logged=${check.isLoggedIn} ` +
+      `LinkedIn session check [${sessionId}] -> logged=${check.isLoggedIn} ` +
         `conf=${check.confidence ?? '?'} ` +
         `signals=${(check.signals ?? []).join(',')}`,
     );
@@ -274,8 +293,8 @@ private buildTextFormat() {
     return check;
   }
 
-  async assertLoggedIn(force = false) {
-    const check = await this.checkLoggedIn(force);
+  async assertLoggedIn(sessionId = 'default', force = false) {
+    const check = await this.checkLoggedIn(sessionId, force);
     if (!check.ok || !check.isLoggedIn) {
       throw new Error(check.reason ?? 'LinkedIn session not authenticated');
     }

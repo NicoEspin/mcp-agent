@@ -6,6 +6,8 @@ import { StreamService } from '../../stream/stream.service';
 import OpenAI from 'openai';
 import { extractTools } from '../utils/mcp-utils';
 
+type SessionId = string;
+
 @Injectable()
 export class LinkedinConnectionService {
   private readonly logger = new Logger(LinkedinConnectionService.name);
@@ -21,28 +23,34 @@ export class LinkedinConnectionService {
     });
   }
 
-  private async hasTool(name: string) {
-    const res = await this.mcp.listTools();
+  // session-aware
+  private async hasTool(sessionId: SessionId, name: string) {
+    const res = await this.mcp.listTools(sessionId);
     const tools = extractTools(res);
     return tools.some((t: any) => t?.name === name);
   }
 
-  private async captureProfileScreenshot(profileUrl: string): Promise<{
+  private async captureProfileScreenshot(
+    sessionId: SessionId,
+    profileUrl: string,
+  ): Promise<{
     base64: string;
     mimeType: string;
   }> {
-    const canNavigate = await this.hasTool('browser_navigate');
+    const canNavigate = await this.hasTool(sessionId, 'browser_navigate');
     if (!canNavigate) {
       throw new Error(
         'Tu servidor MCP no expone browser_navigate. Revisá flags/caps del MCP.',
       );
     }
 
-    await this.mcp.callTool('browser_navigate', { url: profileUrl });
+    await this.mcp.callTool(sessionId, 'browser_navigate', { url: profileUrl });
     await new Promise((r) => setTimeout(r, 1200));
 
-    const { data, mimeType } =
-      await this.stream.getCachedScreenshotBase64(1200);
+    const { data, mimeType } = await this.stream.getCachedScreenshotBase64(
+      sessionId,
+      1200,
+    );
 
     if (!data) {
       throw new Error('Screenshot vacío desde MCP.');
@@ -54,9 +62,14 @@ export class LinkedinConnectionService {
     };
   }
 
-  async checkConnection(profileUrl: string): Promise<boolean> {
-    const { base64, mimeType } =
-      await this.captureProfileScreenshot(profileUrl);
+  async checkConnection(
+    sessionId: SessionId,
+    profileUrl: string,
+  ): Promise<boolean> {
+    const { base64, mimeType } = await this.captureProfileScreenshot(
+      sessionId,
+      profileUrl,
+    );
 
     const prompt = `
 Analizá esta captura del perfil de LinkedIn.
@@ -110,10 +123,14 @@ Reglas de salida:
   }
 
   // ----------------------------
-  // NUEVO sendConnection robusto
+  // sendConnection multi-sesión
   // ----------------------------
-  async sendConnection(profileUrl: string, note?: string) {
-    const canRunCode = await this.hasTool('browser_run_code');
+  async sendConnection(
+    sessionId: SessionId,
+    profileUrl: string,
+    note?: string,
+  ) {
+    const canRunCode = await this.hasTool(sessionId, 'browser_run_code');
 
     if (!canRunCode) {
       return {
@@ -123,114 +140,105 @@ Reglas de salida:
       };
     }
 
+    // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
     const code = `
-const profileUrl = ${JSON.stringify(profileUrl)};
-const note = ${JSON.stringify(note ?? '')};
+async (page) => {
+  const profileUrl = ${JSON.stringify(profileUrl)};
+  const note = ${JSON.stringify(note ?? '')};
 
-const debug = (msg) => {
-  console.log('[send-connection:popover]', msg, 'url=', page.url());
-};
+  const debug = (msg) => {
+    console.log('[send-connection:popover]', msg, 'url=', page.url());
+  };
 
-// Limitar tiempos por acción para no pasarnos del timeout global del MCP
-page.setDefaultTimeout(8000);
-page.setDefaultNavigationTimeout(20000);
+  // Limitar tiempos por acción para no pasarnos del timeout global del MCP
+  page.setDefaultTimeout(8000);
+  page.setDefaultNavigationTimeout(20000);
 
-// 1) Ir al perfil
-await debug('Ir al perfil');
-await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-await page.waitForTimeout(800);
-await debug('Perfil cargado');
+  // 1) Ir al perfil
+  await debug('Ir al perfil');
+  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  await page.waitForTimeout(1000);
+  await debug('Perfil cargado');
 
-// 2) Localizar <main> (si hay más de uno, usamos el último)
-const mains = page.locator('main');
-const mainCount = await mains.count();
-if (!mainCount) {
-  throw new Error('No se encontró ningún <main> en el perfil.');
-}
-const main = mainCount > 1 ? mains.last() : mains.first();
-await debug('Main elegido, count=' + mainCount);
+  // 2) Localizar <main> (si hay más de uno, usamos el último)
+  const mains = page.locator('main');
+  const mainCount = await mains.count();
+  if (!mainCount) {
+    throw new Error('No se encontró ningún <main> en el perfil.');
+  }
+  const main = mainCount > 1 ? mains.last() : mains.first();
+  await debug('Main elegido, count=' + mainCount);
 
-// 3) Botón "Más acciones" (overflow del perfil)
-//    Ej real:
-//    <button id="ember77-profile-overflow-action" ... class="artdeco-dropdown__trigger ...">
-let moreBtn = main
-  .locator(
-    [
-      'button[id$="-profile-overflow-action"].artdeco-dropdown__trigger',
-      'button[aria-label*="Más acciones"]',
-      'button[aria-label*="More actions"]'
-    ].join(', ')
-  )
-  .first();
+  // 3) Botón "Más acciones" (overflow del perfil)
+  let moreBtn = main
+    .locator(
+      [
+        'button[id$="-profile-overflow-action"].artdeco-dropdown__trigger',
+        'button[aria-label*="Más acciones"]',
+        'button[aria-label*="More actions"]'
+      ].join(', ')
+    )
+    .first();
 
-const moreVisible = await moreBtn.isVisible().catch(() => false);
-if (!moreVisible) {
-  throw new Error('No se encontró el botón "Más acciones" (profile-overflow-action).');
-}
+  const moreVisible = await moreBtn.isVisible().catch(() => false);
+  if (!moreVisible) {
+    throw new Error('No se encontró el botón "Más acciones" (profile-overflow-action).');
+  }
 
-await debug('Click en botón "Más acciones" / overflow del perfil');
-await moreBtn.click({ timeout: 6000, force: true });
-await page.waitForTimeout(400);
+  await debug('Click en botón "Más acciones" / overflow del perfil');
+  await moreBtn.click({ timeout: 6000, force: true });
+  await page.waitForTimeout(500);
 
-// 4) Esperar a que se renderice el contenido interno del dropdown
-//    Basado en tu HTML:
-//    <div class="artdeco-dropdown__content-inner"> ... <div aria-label="Invita a X a conectar" ...>
-const dropdownInner = page
-  .locator('div.artdeco-dropdown__content-inner')
-  .last();
+  // 4) Esperar a que se renderice el contenido interno del dropdown
+  const dropdownInner = page
+    .locator('div.artdeco-dropdown__content-inner')
+    .last();
 
-await dropdownInner.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {
-  throw new Error('No se abrió el popover de "Más acciones" (artdeco-dropdown__content-inner).');
-});
+  await dropdownInner.waitFor({ state: 'visible', timeout: 7000 }).catch(() => {
+    throw new Error('No se abrió el popover de "Más acciones" (artdeco-dropdown__content-inner).');
+  });
 
-await debug('Popover de "Más acciones" visible');
+  await debug('Popover de "Más acciones" visible');
 
-// 5) Buscar el item "Conectar" dentro del dropdown interno, no en toda la página
-//    Ej real que pegaste:
-//    <div aria-label="Invita a Nicolás Espin a conectar"
-//         role="button"
-//         class="artdeco-dropdown__item ...">
-let connectItem = dropdownInner
-  .locator(
-    'div.artdeco-dropdown__item[role="button"][aria-label*="Invita"][aria-label*="onectar"]'
-  )
-  .first();
+  // Log de items del dropdown para debug
+  try {
+    const items = dropdownInner.locator('div.artdeco-dropdown__item[role="button"]');
+    const labels = await items.allTextContents();
+    debug('Items en dropdown: ' + JSON.stringify(labels));
+  } catch (e) {
+    debug('No se pudieron loguear los items del dropdown: ' + (e?.message || e));
+  }
 
-// Fallback: cualquier artdeco-dropdown__item con texto visible "Conectar"
-if (!(await connectItem.count())) {
-  connectItem = dropdownInner
-    .locator('div.artdeco-dropdown__item[role="button"] span')
+  // 5) Buscar el item "Conectar" dentro del dropdown interno por TEXTO VISIBLE
+  const connectButton = dropdownInner
+    .locator('div.artdeco-dropdown__item[role="button"]')
     .filter({ hasText: /conectar/i })
     .first();
+
+  await connectButton.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {
+    throw new Error('No se encontró el item "Conectar" dentro del dropdown de Más acciones.');
+  });
+
+  await debug('Click en "Conectar" dentro del dropdown');
+  await connectButton.click({ timeout: 6000, force: true });
+
+  // 7) Pequeña espera para que LinkedIn procese la acción
+  await page.waitForTimeout(800);
+
+  await debug('Flujo de conexión por popover finalizado');
+
+  // Podrías extender esto para rellenar nota si LinkedIn abre un modal de "Añadir nota".
+  // Devolvemos un resultado simple para que aparezca en toolResult.
+  return { ok: true, viaPopover: true, noteLength: note.length };
 }
-
-if (!(await connectItem.count())) {
-  throw new Error('No se encontró el item "Conectar" dentro del dropdown de Más acciones.');
-}
-
-// 6) Asegurarse de clickear el contenedor clickable .artdeco-dropdown__item
-const clickable = connectItem
-  .locator('xpath=ancestor::div[contains(@class,"artdeco-dropdown__item")][1]')
-  .first();
-
-if (!(await clickable.count())) {
-  throw new Error(
-    'No se encontró contenedor clickable para "Conectar" (artdeco-dropdown__item).'
-  );
-}
-
-await debug('Click en "Conectar" dentro del dropdown');
-await clickable.click({ timeout: 6000, force: true });
-
-// 7) Pequeña espera para que LinkedIn procese la acción
-await page.waitForTimeout(800);
-
-await debug('Flujo de conexión por popover finalizado');
-return { ok: true };
 `;
 
     try {
-      const result: any = await this.mcp.callTool('browser_run_code', { code });
+      const result: any = await this.mcp.callTool(
+        sessionId,
+        'browser_run_code',
+        { code },
+      );
 
       this.logger.debug(
         'browser_run_code result (sendConnection popover): ' +

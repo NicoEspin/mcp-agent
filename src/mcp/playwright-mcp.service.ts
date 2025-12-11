@@ -12,21 +12,36 @@ import * as path from 'path';
 type McpClient = any;
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+type SessionId = string;
+
+interface McpSession {
+  client: McpClient | null;
+  connected: boolean;
+  connecting: boolean;
+  lastUsedAt: number;
+}
+
 @Injectable()
 export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PlaywrightMcpService.name);
 
+  // Sesión por defecto (compat con tu código actual)
+  private readonly DEFAULT_SESSION_ID: SessionId = 'default';
+
+  // 🧠 Ahora manejamos múltiples sesiones
+  private sessions = new Map<SessionId, McpSession>();
+
   private callSignature: 'old' | 'new' = 'old';
   private serverProcess?: ChildProcessWithoutNullStreams;
-  private client: McpClient | null = null;
-  private connected = false;
-  private connecting = false;
 
-  // Cache de tools para ayudar a otros servicios
+  // Cache de tools para el servidor (compartido entre sesiones)
   private toolsCache: any[] | null = null;
 
   constructor(private readonly config: ConfigService) {}
 
+  // ----------------------------------------------------
+  // Ciclo de vida Nest
+  // ----------------------------------------------------
   async onModuleInit() {
     const managed =
       this.config.get<string>('PLAYWRIGHT_MCP_MANAGED') === 'true';
@@ -38,21 +53,25 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (autoConnect) {
-      await this.safeConnectClient();
-      // warmup para abrir Chromium / generar página
-      await this.warmupBrowser();
+      // 🔥 Conectamos y calentamos la sesión por defecto
+      await this.safeConnectSession(this.DEFAULT_SESSION_ID);
+      await this.warmupBrowser(this.DEFAULT_SESSION_ID);
     }
   }
 
   async onModuleDestroy() {
-    try {
-      if (this.client && this.connected) {
-        await this.client.close?.();
+    // Cerramos todos los clientes MCP existentes
+    for (const [id, session] of this.sessions.entries()) {
+      try {
+        if (session.client && session.connected) {
+          await session.client.close?.();
+        }
+      } catch {
+        // ignoramos errores en shutdown
       }
-    } catch {}
-    this.client = null;
-    this.connected = false;
-    this.connecting = false;
+    }
+
+    this.sessions.clear();
     this.toolsCache = null;
 
     if (this.serverProcess) {
@@ -60,6 +79,9 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  // ----------------------------------------------------
+  // Helpers de configuración
+  // ----------------------------------------------------
   private getPort() {
     return Number(this.config.get('PLAYWRIGHT_MCP_PORT') ?? 8931);
   }
@@ -121,6 +143,14 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     );
   }
 
+  private getAllowedHosts() {
+    return this.config.get<string>('PLAYWRIGHT_MCP_ALLOWED_HOSTS') ?? '*';
+  }
+
+  private getHost() {
+    return this.config.get<string>('PLAYWRIGHT_MCP_HOST') ?? '127.0.0.1';
+  }
+
   private extractTools(resp: any): any[] {
     return (
       resp?.tools ??
@@ -130,18 +160,14 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
       []
     );
   }
-  private getAllowedHosts() {
-    return this.config.get<string>('PLAYWRIGHT_MCP_ALLOWED_HOSTS') ?? '*';
-  }
-  private getHost() {
-    return this.config.get<string>('PLAYWRIGHT_MCP_HOST') ?? '127.0.0.1';
-  }
+
+  // ----------------------------------------------------
+  // Lanzar servidor MCP (1 solo proceso para todos)
+  // ----------------------------------------------------
   private async startServerProcess() {
     const port = this.getPort();
     const host = this.getHost();
 
-    // IMPORTANTE: por defecto NO fuerces --browser,
-    // o usa "chrome" si querés un canal estable.
     const browser =
       this.config.get<string>('PLAYWRIGHT_MCP_BROWSER') ?? 'chrome';
 
@@ -173,7 +199,7 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
 
       '--user-data-dir',
       userDataDir,
-      '--shared-browser-context',
+      '--shared-browser-context', // ⬅️ opcional quitar si querés contextos totalmente aislados
 
       // Capabilities extra
       '--caps',
@@ -206,12 +232,10 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
       this.getAllowedHosts(),
     ];
 
-    // Opcional: reducir rarezas de SPAs
     if (this.getBlockServiceWorkers()) {
       args.push('--block-service-workers');
     }
 
-    // Solo agregá --browser si querés canal específico
     if (browser) {
       args.push('--browser', browser);
     }
@@ -239,32 +263,42 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(`Playwright MCP exited with code ${code}`),
     );
 
-    // un poco más generoso
     await sleep(10000);
   }
 
-  private async safeConnectClient() {
+  // ----------------------------------------------------
+  // Gestión de sesiones (múltiples clientes MCP)
+  // ----------------------------------------------------
+  private async safeConnectSession(sessionId: SessionId) {
     try {
-      await this.connectClientWithRetry();
+      await this.connectClientWithRetry(sessionId);
     } catch {
-      this.connected = false;
-      this.connecting = false;
-      this.client = null;
+      const existing = this.sessions.get(sessionId);
+      if (existing) {
+        this.sessions.set(sessionId, {
+          ...existing,
+          client: null,
+          connected: false,
+          connecting: false,
+          lastUsedAt: Date.now(),
+        });
+      }
       this.logger.warn(
-        `MCP not available at startup. App will continue. ` +
+        `MCP not available at startup for session "${sessionId}". App will continue. ` +
           `Start MCP or enable managed mode.`,
       );
     }
   }
 
-  private async connectClientWithRetry() {
+  private async connectClientWithRetry(sessionId: SessionId) {
     const attempts = 4;
     let lastErr: any;
 
     for (let i = 0; i < attempts; i++) {
       try {
-        await this.connectClient();
-        if (this.connected) return;
+        await this.connectClient(sessionId);
+        const session = this.sessions.get(sessionId);
+        if (session?.connected) return;
       } catch (e) {
         lastErr = e;
         await sleep(300 * (i + 1));
@@ -273,9 +307,24 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     throw lastErr ?? new Error('MCP connection failed');
   }
 
-  private async connectClient() {
-    if (this.connected || this.connecting) return;
-    this.connecting = true;
+  private async connectClient(sessionId: SessionId) {
+    const existing = this.sessions.get(sessionId);
+    if (existing && (existing.connected || existing.connecting)) {
+      return;
+    }
+
+    let session: McpSession =
+      existing ??
+      ({
+        client: null,
+        connected: false,
+        connecting: false,
+        lastUsedAt: Date.now(),
+      } as McpSession);
+
+    session.connecting = true;
+    session.lastUsedAt = Date.now();
+    this.sessions.set(sessionId, session);
 
     try {
       const { Client } =
@@ -288,81 +337,133 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
         await import('@modelcontextprotocol/sdk/client/sse.js');
 
       const client = new Client(
-        { name: 'andeshire-playwright-client', version: '0.1.0' },
+        { name: `andeshire-playwright-client-${sessionId}`, version: '0.1.0' },
         { capabilities: {} },
       );
 
       const httpUrl = this.getHttpUrl();
       const sseUrl = this.getSseUrl();
 
-      this.logger.log(`Attempting MCP HTTP connect -> ${httpUrl.toString()}`);
+      this.logger.log(
+        `Attempting MCP HTTP connect (session=${sessionId}) -> ${httpUrl.toString()}`,
+      );
 
       try {
         const transport = new StreamableHTTPClientTransport(httpUrl);
         await client.connect(transport);
 
-        this.client = client;
-        this.connected = true;
+        session = {
+          client,
+          connected: true,
+          connecting: false,
+          lastUsedAt: Date.now(),
+        };
+        this.sessions.set(sessionId, session);
+
         this.logger.log(
-          `Connected to Playwright MCP (HTTP) at ${httpUrl.toString()}`,
+          `Connected to Playwright MCP (HTTP, session=${sessionId}) at ${httpUrl.toString()}`,
         );
         return;
       } catch (e) {
         this.logger.warn(
-          `HTTP transport failed, trying SSE -> ${sseUrl.toString()}`,
+          `HTTP transport failed (session=${sessionId}), trying SSE -> ${sseUrl.toString()}`,
         );
         const transport = new SSEClientTransport(sseUrl);
         await client.connect(transport);
 
-        this.client = client;
-        this.connected = true;
+        session = {
+          client,
+          connected: true,
+          connecting: false,
+          lastUsedAt: Date.now(),
+        };
+        this.sessions.set(sessionId, session);
+
         this.logger.log(
-          `Connected to Playwright MCP (SSE) at ${sseUrl.toString()}`,
+          `Connected to Playwright MCP (SSE, session=${sessionId}) at ${sseUrl.toString()}`,
         );
         return;
       }
     } catch (err) {
-      this.client = null;
-      this.connected = false;
+      session = {
+        client: null,
+        connected: false,
+        connecting: false,
+        lastUsedAt: Date.now(),
+      };
+      this.sessions.set(sessionId, session);
       throw err;
-    } finally {
-      this.connecting = false;
     }
   }
 
-  private async ensureConnected() {
-    if (this.connected) return;
-    await this.connectClientWithRetry();
+  private async ensureConnected(sessionId: SessionId) {
+    const session = this.sessions.get(sessionId);
+    if (session?.connected) {
+      session.lastUsedAt = Date.now();
+      this.sessions.set(sessionId, session);
+      return;
+    }
+    await this.connectClientWithRetry(sessionId);
   }
-  async listToolDefs(force = false): Promise<any[]> {
-    await this.ensureConnected();
+
+  // ----------------------------------------------------
+  // Tools & helpers públicos (multi-sesión + compat)
+  // ----------------------------------------------------
+
+  async listToolDefs(
+    force = false,
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<any[]> {
+    await this.ensureConnected(sessionId);
 
     if (!force && this.toolsCache) return this.toolsCache;
 
-    const res = await this.listTools(); // ya setea cache internamente
+    const res = await this.listTools(sessionId); // ya setea cache internamente
     const tools = this.extractTools(res);
 
     this.toolsCache = tools;
     return tools;
   }
 
-  // ✅ Helper que tu agente necesita
-  async hasTool(name: string): Promise<boolean> {
-    const tools = await this.listToolDefs();
+  // hasTool(name)
+  // hasTool(sessionId, name)
+  async hasTool(name: string): Promise<boolean>;
+  async hasTool(sessionId: SessionId, name: string): Promise<boolean>;
+  async hasTool(a: string, b?: string): Promise<boolean> {
+    let sessionId: SessionId = this.DEFAULT_SESSION_ID;
+    let name: string;
+
+    if (b !== undefined) {
+      sessionId = a;
+      name = b;
+    } else {
+      name = a;
+    }
+
+    const tools = await this.listToolDefs(false, sessionId);
     return tools.some((t: any) => t?.name === name);
   }
 
-  async listTools() {
-    await this.ensureConnected();
-    const c: any = this.client!;
+  // listTools()
+  // listTools(sessionId)
+  async listTools(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<any> {
+    await this.ensureConnected(sessionId);
+
+    const session = this.sessions.get(sessionId);
+    if (!session?.client) {
+      throw new Error(`MCP client not initialized for session "${sessionId}"`);
+    }
+
+    const c: any = session.client;
 
     let res: any;
     try {
-      // firmas nuevas suelen aceptar objeto
-      res = await c.listTools({});
+      res = await c.listTools({}); // firma nueva
       this.callSignature = 'new';
     } catch {
-      res = await c.listTools();
+      res = await c.listTools(); // firma vieja
       this.callSignature = 'old';
     }
 
@@ -370,31 +471,59 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
     return res;
   }
 
-  async callTool(name: string, args: unknown = {}) {
-    await this.ensureConnected();
-    const c: any = this.client!;
+  // callTool(name, args?) -> usa sesión "default"
+  // callTool(sessionId, name, args?) -> usa la sesión indicada
+  async callTool(name: string, args?: unknown): Promise<any>;
+  async callTool(
+    sessionId: SessionId,
+    name: string,
+    args?: unknown,
+  ): Promise<any>;
+  async callTool(a: string, b?: any, c?: any): Promise<any> {
+    let sessionId: SessionId = this.DEFAULT_SESSION_ID;
+    let name: string;
+    let args: unknown;
+
+    if (c !== undefined) {
+      // callTool(sessionId, name, args)
+      sessionId = a;
+      name = b;
+      args = c;
+    } else {
+      // callTool(name, args)
+      name = a;
+      args = b;
+    }
+
+    await this.ensureConnected(sessionId);
+
+    const session = this.sessions.get(sessionId);
+    if (!session?.client) {
+      throw new Error(`MCP client not initialized for session "${sessionId}"`);
+    }
+
+    const cClient: any = session.client;
     const safeArgs = args && typeof args === 'object' ? args : {};
 
     // Asegura que ya descubrimos firma al menos una vez
     if (!this.toolsCache) {
       try {
-        await this.listTools();
+        await this.listTools(sessionId);
       } catch {}
     }
 
     if (this.callSignature === 'old') {
-      return await c.callTool(name, safeArgs);
+      return await cClient.callTool(name, safeArgs);
     }
 
-    return await c.callTool({ name, arguments: safeArgs });
+    return await cClient.callTool({ name, arguments: safeArgs });
   }
 
-  private async warmupBrowser() {
+  private async warmupBrowser(sessionId: SessionId = this.DEFAULT_SESSION_ID) {
     try {
-      const res = await this.listTools();
+      const res = await this.listTools(sessionId);
       const tools = this.extractTools(res);
 
-      // Si existe navigate, lo usamos para forzar apertura de ventana
       const hasNavigate = tools.some(
         (t: any) => t?.name === 'browser_navigate',
       );
@@ -403,11 +532,13 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
         const url =
           this.config.get<string>('PLAYWRIGHT_MCP_WARMUP_URL') ??
           'https://www.linkedin.com/';
-        await this.callTool('browser_navigate', { url });
-        this.logger.log(`Warmup navigate OK -> ${url}`);
+        await this.callTool(sessionId, 'browser_navigate', { url });
+        this.logger.log(`Warmup navigate OK (session=${sessionId}) -> ${url}`);
       }
     } catch (e: any) {
-      this.logger.warn(`Warmup failed: ${e?.message ?? e}`);
+      this.logger.warn(
+        `Warmup failed (session=${sessionId}): ${e?.message ?? e}`,
+      );
     }
   }
 

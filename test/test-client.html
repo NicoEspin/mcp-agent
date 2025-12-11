@@ -152,7 +152,8 @@
             border: 1px solid #22223a;
             border-radius: 10px;
             padding: 10px;
-            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+                monospace;
             font-size: 11px;
             white-space: pre-wrap;
             max-height: 220px;
@@ -178,7 +179,8 @@
         <div class="card">
             <h1 class="title">Playwright MCP + LinkedIn Microservice - Test UI</h1>
             <div class="muted">
-                Stream de screenshots vía WebSocket + prueba del endpoint de envío de mensajes.
+                Stream de screenshots vía WebSocket + prueba de endpoints de LinkedIn
+                (multi-sesión con <code>sessionId</code>).
             </div>
         </div>
 
@@ -189,7 +191,8 @@
                     <div>
                         <div class="title">Streaming</div>
                         <div class="muted">
-                            Conecta a <code>/stream</code> y muestra frames base64.
+                            Conecta a <code>/stream</code> y muestra frames base64. Usa
+                            <code>sessionId</code> para elegir qué contexto de navegador.
                         </div>
                     </div>
                     <div style="text-align: right">
@@ -203,6 +206,11 @@
                     <div>
                         <label>Base URL API</label>
                         <input id="baseUrl" value="http://localhost:3001" />
+
+                        <div style="height: 8px"></div>
+
+                        <label>Session ID (opcional)</label>
+                        <input id="sessionId" placeholder="default" />
                     </div>
 
                     <div>
@@ -236,16 +244,20 @@
                 <div style="height: 10px"></div>
                 <div class="muted">
                     Si no ves nada, asegurate de que el MCP esté manejando un contexto
-                    con una página activa (tu flujo de LinkedIn debería generarla).
+                    con una página activa (tu flujo de LinkedIn debería generarla) y
+                    que estés usando el mismo <code>sessionId</code> que tus requests
+                    HTTP.
                 </div>
             </div>
 
             <!-- LINKEDIN CARD -->
             <div class="card">
-                <div class="title">Probar api/v1/linkedin/send-message</div>
+                <div class="title">Probar api/v1/linkedin/*</div>
                 <div class="muted">
-                    Este endpoint usa tu flujo real del servicio. El backend debe tener
-                    acceso a <code>OPENAI_API_KEY</code> en el <code>.env</code>.
+                    Estos endpoints usan tu flujo real del servicio. El backend debe
+                    tener acceso a <code>OPENAI_API_KEY</code> en el
+                    <code>.env</code>. El <code>sessionId</code> se comparte con el
+                    streaming.
                 </div>
 
                 <div style="height: 12px"></div>
@@ -261,27 +273,30 @@
 
                 <label>Nota de invitación (opcional)</label>
                 <textarea id="connectionNote" placeholder="Hola! Me gustaría conectar contigo..."></textarea>
+
                 <div style="height: 10px"></div>
                 <label>Limit (últimos mensajes)</label>
                 <input id="chatLimit" type="number" min="1" max="100" value="30" />
 
                 <div style="height: 12px"></div>
-                <div style="height: 10px"></div>
 
-                <label style="display:flex; align-items:center; gap:8px;">
+                <label style="display: flex; align-items: center; gap: 8px">
                     <input id="useAgent" type="checkbox" />
                     Usar modo agente (Responses + self-heal)
                 </label>
 
                 <div style="height: 10px"></div>
 
-                <div style="display: flex; gap: 8px; flex-wrap: wrap;">
+                <div style="display: flex; gap: 8px; flex-wrap: wrap">
                     <button id="btnSend">Enviar mensaje</button>
-                    <button id="btnConnectRequest" class="secondary">Enviar solicitud</button>
-                    <button id="btnCheckConnection" class="secondary">Check conexión</button>
+                    <button id="btnConnectRequest" class="secondary">
+                        Enviar solicitud
+                    </button>
+                    <button id="btnCheckConnection" class="secondary">
+                        Check conexión
+                    </button>
                     <button id="btnReadChat" class="secondary">Leer chat</button>
                 </div>
-
 
                 <div style="height: 12px"></div>
 
@@ -291,15 +306,23 @@
         </div>
     </div>
 
-    <!-- Socket.IO client desde el servidor Nest -->
     <script>
         function logApi(obj) {
             const el = document.getElementById("apiLog");
             el.textContent =
                 typeof obj === "string" ? obj : JSON.stringify(obj, null, 2);
         }
+
         function getBaseUrl() {
+            const baseUrlInput = document.getElementById("baseUrl");
             return baseUrlInput.value.trim().replace(/\/$/, "");
+        }
+
+        function getSessionId() {
+            const el = document.getElementById("sessionId");
+            if (!el) return "default";
+            const v = el.value.trim();
+            return v || "default";
         }
 
         function isAgentMode() {
@@ -314,7 +337,6 @@
                 : "/api/v1/linkedin";
             return `${base}${prefix}/${path}`;
         }
-
 
         let socket = null;
         let lastFrameTs = 0;
@@ -342,8 +364,8 @@
                 s.onerror = () =>
                     reject(
                         new Error(
-                            "No se pudo cargar socket.io.js desde el servidor. ¿Está corriendo Nest?"
-                        )
+                            "No se pudo cargar socket.io.js desde el servidor. ¿Está corriendo Nest?",
+                        ),
                     );
                 document.head.appendChild(s);
             });
@@ -357,7 +379,7 @@
                 await ensureSocketIoScript(baseUrl);
 
                 socket = window.io(`${baseUrl}/stream`, {
-                    query: { fps },
+                    query: { fps, sessionId: getSessionId() },
                     transports: ["websocket", "polling"],
                 });
 
@@ -386,7 +408,6 @@
                 });
 
                 socket.on("frame_error", (err) => {
-                    // Mostramos hint suave, no alert
                     emptyHint.style.display = "block";
                     emptyHint.textContent =
                         "Error obteniendo screenshot desde MCP. Revisá consola y logs del backend.";
@@ -426,56 +447,86 @@
         })();
 
         // Enviar mensaje
-        document.getElementById("btnSend").addEventListener("click", async () => {
-            const profileUrl = document.getElementById("profileUrl").value.trim();
-            const message = document.getElementById("message").value.trim();
+        document
+            .getElementById("btnSend")
+            .addEventListener("click", async () => {
+                const profileUrl =
+                    document.getElementById("profileUrl").value.trim();
+                const message = document.getElementById("message").value.trim();
 
-            if (!profileUrl || !message) {
-                logApi("Faltan profileUrl o message.");
-                return;
-            }
+                if (!profileUrl || !message) {
+                    logApi("Faltan profileUrl o message.");
+                    return;
+                }
 
-            logApi(isAgentMode() ? "Enviando (agente)..." : "Enviando...");
+                logApi(isAgentMode() ? "Enviando (agente)..." : "Enviando...");
 
-            try {
-                const res = await fetch(endpoint("send-message"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ profileUrl, message }),
-                });
+                try {
+                    const res = await fetch(endpoint("send-message"), {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            sessionId: getSessionId(),
+                            profileUrl,
+                            message,
+                        }),
+                    });
 
-                const data = await res.json().catch(() => ({}));
-                logApi({ mode: isAgentMode() ? "agent" : "classic", status: res.status, ok: res.ok, body: data });
-            } catch (e) {
-                logApi(String(e?.message ?? e));
-            }
-        });
+                    const data = await res.json().catch(() => ({}));
+                    logApi({
+                        mode: isAgentMode() ? "agent" : "classic",
+                        status: res.status,
+                        ok: res.ok,
+                        body: data,
+                    });
+                } catch (e) {
+                    logApi(String(e?.message ?? e));
+                }
+            });
 
         // Enviar solicitud de conexión
-        document.getElementById("btnConnectRequest").addEventListener("click", async () => {
-            const profileUrl = document.getElementById("profileUrl").value.trim();
-            const note = document.getElementById("connectionNote").value.trim();
+        document
+            .getElementById("btnConnectRequest")
+            .addEventListener("click", async () => {
+                const profileUrl =
+                    document.getElementById("profileUrl").value.trim();
+                const note = document
+                    .getElementById("connectionNote")
+                    .value.trim();
 
-            if (!profileUrl) {
-                logApi("Falta profileUrl.");
-                return;
-            }
+                if (!profileUrl) {
+                    logApi("Falta profileUrl.");
+                    return;
+                }
 
-            logApi(isAgentMode() ? "Enviando solicitud (agente)..." : "Enviando solicitud...");
+                logApi(
+                    isAgentMode()
+                        ? "Enviando solicitud (agente)..."
+                        : "Enviando solicitud...",
+                );
 
-            try {
-                const res = await fetch(endpoint("send-connection"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ profileUrl, note: note || undefined }),
-                });
+                try {
+                    const res = await fetch(endpoint("send-connection"), {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            sessionId: getSessionId(),
+                            profileUrl,
+                            note: note || undefined,
+                        }),
+                    });
 
-                const data = await res.json().catch(() => ({}));
-                logApi({ mode: isAgentMode() ? "agent" : "classic", status: res.status, ok: res.ok, body: data });
-            } catch (e) {
-                logApi(String(e?.message ?? e));
-            }
-        });
+                    const data = await res.json().catch(() => ({}));
+                    logApi({
+                        mode: isAgentMode() ? "agent" : "classic",
+                        status: res.status,
+                        ok: res.ok,
+                        body: data,
+                    });
+                } catch (e) {
+                    logApi(String(e?.message ?? e));
+                }
+            });
 
         function normalizeBool(x) {
             if (typeof x === "boolean") return x;
@@ -488,89 +539,113 @@
         }
 
         // Check conexión
-        document.getElementById("btnCheckConnection").addEventListener("click", async () => {
-            const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
-            const profileUrl = document.getElementById("profileUrl").value.trim();
+        document
+            .getElementById("btnCheckConnection")
+            .addEventListener("click", async () => {
+                const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
+                const profileUrl =
+                    document.getElementById("profileUrl").value.trim();
 
-            if (!profileUrl) {
-                logApi("Falta profileUrl.");
-                return;
-            }
-
-            logApi("Chequeando conexión...");
-
-            try {
-                const res = await fetch(`${baseUrl}/api/v1/linkedin/check-connection`, {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ profileUrl }),
-                });
-
-                // Tu endpoint debería devolver un boolean JSON.
-                // Igual dejamos fallback por si alguna vez devuelve texto plano.
-                let data;
-                try {
-                    data = await res.json();
-                } catch {
-                    data = await res.text();
+                if (!profileUrl) {
+                    logApi("Falta profileUrl.");
+                    return;
                 }
 
-                const connected = normalizeBool(data);
+                logApi("Chequeando conexión...");
 
-                logApi({
-                    status: res.status,
-                    ok: res.ok,
-                    connected,
-                    raw: data,
-                    profileUrl,
-                });
-            } catch (e) {
-                logApi(String(e?.message ?? e));
-            }
-        });
+                try {
+                    const res = await fetch(
+                        `${baseUrl}/api/v1/linkedin/check-connection`,
+                        {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                                sessionId: getSessionId(),
+                                profileUrl,
+                            }),
+                        },
+                    );
+
+                    let data;
+                    try {
+                        data = await res.json();
+                    } catch {
+                        data = await res.text();
+                    }
+
+                    const connected = normalizeBool(data);
+
+                    logApi({
+                        status: res.status,
+                        ok: res.ok,
+                        connected,
+                        raw: data,
+                        profileUrl,
+                        sessionId: getSessionId(),
+                    });
+                } catch (e) {
+                    logApi(String(e?.message ?? e));
+                }
+            });
+
         // Leer chat
-        document.getElementById("btnReadChat").addEventListener("click", async () => {
-            const profileUrl = document.getElementById("profileUrl").value.trim();
-            const limitRaw = document.getElementById("chatLimit")?.value ?? "30";
-            const limit = Math.max(1, Math.min(100, Number(limitRaw || 30)));
+        document
+            .getElementById("btnReadChat")
+            .addEventListener("click", async () => {
+                const profileUrl =
+                    document.getElementById("profileUrl").value.trim();
+                const limitRaw =
+                    document.getElementById("chatLimit")?.value ?? "30";
+                const limit = Math.max(
+                    1,
+                    Math.min(100, Number(limitRaw || 30)),
+                );
 
-            if (!profileUrl) {
-                logApi("Falta profileUrl.");
-                return;
-            }
+                if (!profileUrl) {
+                    logApi("Falta profileUrl.");
+                    return;
+                }
 
-            logApi(isAgentMode() ? "Leyendo chat (agente)..." : "Leyendo chat...");
+                logApi(isAgentMode() ? "Leyendo chat (agente)..." : "Leyendo chat...");
 
-            try {
-                const res = await fetch(endpoint("read-chat"), {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ profileUrl, limit }),
-                });
+                try {
+                    const res = await fetch(endpoint("read-chat"), {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                            sessionId: getSessionId(),
+                            profileUrl,
+                            limit,
+                        }),
+                    });
 
-                const data = await res.json().catch(() => ({}));
+                    const data = await res.json().catch(() => ({}));
 
-                const messages =
-                    data?.data?.messages ||
-                    data?.messages || // por si el agente devuelve directo
-                    data?.body?.data?.messages ||
-                    [];
+                    const messages =
+                        data?.data?.messages ||
+                        data?.messages ||
+                        data?.body?.data?.messages ||
+                        [];
 
-                logApi({
-                    mode: isAgentMode() ? "agent" : "classic",
-                    status: res.status,
-                    ok: res.ok,
-                    profileUrl,
-                    limit,
-                    messagesCount: Array.isArray(messages) ? messages.length : null,
-                    messagesPreview: Array.isArray(messages) ? messages.slice(-5) : null,
-                    body: data,
-                });
-            } catch (e) {
-                logApi(String(e?.message ?? e));
-            }
-        });
-
+                    logApi({
+                        mode: isAgentMode() ? "agent" : "classic",
+                        status: res.status,
+                        ok: res.ok,
+                        profileUrl,
+                        limit,
+                        sessionId: getSessionId(),
+                        messagesCount: Array.isArray(messages)
+                            ? messages.length
+                            : null,
+                        messagesPreview: Array.isArray(messages)
+                            ? messages.slice(-5)
+                            : null,
+                        body: data,
+                    });
+                } catch (e) {
+                    logApi(String(e?.message ?? e));
+                }
+            });
 
         // Feedback si el stream se queda quieto
         setInterval(() => {
@@ -580,7 +655,7 @@
             if (lastFrameTs && diff > 5000) {
                 emptyHint.style.display = "block";
                 emptyHint.textContent =
-                    "No llegan frames hace unos segundos. Puede que no haya página activa en el contexto compartido.";
+                    "No llegan frames hace unos segundos. Puede que no haya página activa en el contexto o el sessionId no coincida.";
             }
         }, 2000);
     </script>

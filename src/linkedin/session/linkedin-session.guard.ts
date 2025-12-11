@@ -16,8 +16,28 @@ export class LinkedinSessionGuard implements CanActivate {
 
   constructor(private readonly session: LinkedinSessionService) {}
 
+  private resolveSessionId(req: any): string {
+    const fromQuery = req?.query?.sessionId;
+    const fromHeader = req?.headers?.['x-linkedin-session-id'];
+    const fromBody = req?.body?.sessionId;
+
+    const pick = (val: any) => {
+      if (Array.isArray(val)) val = val[0];
+      if (typeof val === 'string') {
+        const trimmed = val.trim();
+        if (trimmed) return trimmed;
+      }
+      return null;
+    };
+
+    const candidate =
+      pick(fromQuery) ?? pick(fromHeader) ?? pick(fromBody) ?? null;
+
+    return candidate ?? 'default';
+  }
+
   async canActivate(context: ExecutionContext) {
-    const req = context.switchToHttp().getRequest();
+    const req: any = context.switchToHttp().getRequest();
 
     const force =
       req?.query?.forceSessionCheck === 'true' ||
@@ -25,14 +45,17 @@ export class LinkedinSessionGuard implements CanActivate {
       req?.headers?.['x-force-session-check'] === 'true' ||
       req?.headers?.['x-force-session-check'] === '1';
 
+    const sessionId = this.resolveSessionId(req);
+    req.linkedinSessionId = sessionId;
+
     try {
-      const check = await this.session.checkLoggedIn(force);
+      const check = await this.session.checkLoggedIn(sessionId, force);
 
       // trazabilidad
       req.linkedinSessionCheck = check;
 
       this.logger.debug(
-        `Session check => ok=${check.ok} logged=${check.isLoggedIn} conf=${check.confidence ?? '?'} reason=${check.reason ?? ''}`,
+        `Session check [${sessionId}] => ok=${check.ok} logged=${check.isLoggedIn} conf=${check.confidence ?? '?'} reason=${check.reason ?? ''}`,
       );
 
       // ✅ Diferenciar "no pude validar" vs "validé y no está logueado"
@@ -40,6 +63,7 @@ export class LinkedinSessionGuard implements CanActivate {
         throw new ServiceUnavailableException({
           ok: false,
           error: 'LinkedIn session validation unavailable',
+          sessionId,
           detail: check,
         });
       }
@@ -48,6 +72,7 @@ export class LinkedinSessionGuard implements CanActivate {
         throw new UnauthorizedException({
           ok: false,
           error: 'LinkedIn session validation failed',
+          sessionId,
           detail: check,
         });
       }
