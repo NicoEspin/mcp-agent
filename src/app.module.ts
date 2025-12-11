@@ -13,8 +13,8 @@ import { StreamModule } from './stream/stream.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: [
-        path.resolve(process.cwd(), '.env'),     // cuando el repo root es /playwirght
-        path.resolve(process.cwd(), '../.env'),  // tu estructura local rara
+        path.resolve(process.cwd(), '.env'),     
+        path.resolve(process.cwd(), '../.env'),  
       ],
     }),
     PlaywrightMcpModule,

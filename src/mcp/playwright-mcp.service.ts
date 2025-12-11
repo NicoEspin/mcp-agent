@@ -100,7 +100,7 @@ export class PlaywrightMcpService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getTimeoutAction() {
-    return Number(this.config.get('PLAYWRIGHT_MCP_TIMEOUT_ACTION') ?? 15000);
+    return Number(this.config.get('PLAYWRIGHT_MCP_TIMEOUT_ACTION') ?? 45000);
   }
 
   private getTimeoutNavigation() {
