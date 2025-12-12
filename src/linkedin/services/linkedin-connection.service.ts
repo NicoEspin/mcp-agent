@@ -151,7 +151,70 @@ async (page) => {
   const main = mainCount > 1 ? mains.last() : mains.first();
   await debug('Main elegido, count=' + mainCount);
 
-  // 3) Botón "Más acciones" (overflow del perfil)
+  // 3) FIRST: Try to find direct "Conectar" button with multiple selectors
+  await debug('Buscando botón "Conectar" directo');
+  
+  // Multiple selectors for direct "Conectar" button
+  const directConnectSelectors = [
+    // By aria-label containing "conectar"
+    'button[aria-label*="conectar" i]',
+    'button[aria-label*="Invita" i][aria-label*="conectar" i]',
+    
+    // By class and text content
+    'button.artdeco-button--primary:has-text("Conectar")',
+    'button.artdeco-button--2.artdeco-button--primary:has-text("Conectar")',
+    
+    // By SVG icon and text
+    'button:has(svg[data-test-icon="connect-small"]) >> text="Conectar"',
+    'button:has(use[href="#connect-small"]) >> text="Conectar"',
+    
+    // By button text with various classes
+    'button:has(span.artdeco-button__text >> text="Conectar")',
+    'button.artdeco-button:has(span >> text="Conectar")',
+    
+    // By ID pattern (ember IDs)
+    'button[id^="ember"]:has-text("Conectar")',
+    
+    // Generic fallbacks
+    'button >> text="Conectar"',
+    'button:text("Conectar")'
+  ];
+  
+  let directConnectBtn = null;
+  let usedSelector = '';
+  
+  for (const selector of directConnectSelectors) {
+    try {
+      const btn = main.locator(selector).first();
+      const isVisible = await btn.isVisible().catch(() => false);
+      if (isVisible) {
+        directConnectBtn = btn;
+        usedSelector = selector;
+        await debug('Encontrado botón Conectar directo con selector: ' + selector);
+        break;
+      }
+    } catch (e) {
+      // Continue to next selector
+    }
+  }
+  
+  // If direct button found, click it and return
+  if (directConnectBtn) {
+    try {
+      await debug('Click en botón "Conectar" directo');
+      await directConnectBtn.click({ timeout: 6000, force: true });
+      await page.waitForTimeout(1000);
+      await debug('Flujo de conexión directa finalizado');
+      return { ok: true, viaDirect: true, selector: usedSelector, noteLength: note.length };
+    } catch (clickError) {
+      await debug('Error al hacer click en botón directo: ' + (clickError?.message || clickError));
+      // Fall through to dropdown approach
+    }
+  }
+  
+  // 4) FALLBACK: Use "Más acciones" dropdown approach
+  await debug('No se encontró botón directo o falló click, usando dropdown "Más acciones"');
+  
   let moreBtn = main
     .locator(
       [
@@ -171,7 +234,7 @@ async (page) => {
   await moreBtn.click({ timeout: 6000, force: true });
   await page.waitForTimeout(500);
 
-  // 4) Esperar a que se renderice el contenido interno del dropdown
+  // 5) Esperar a que se renderice el contenido interno del dropdown
   const dropdownInner = page
     .locator('div.artdeco-dropdown__content-inner')
     .last();
@@ -191,7 +254,7 @@ async (page) => {
     debug('No se pudieron loguear los items del dropdown: ' + (e?.message || e));
   }
 
-  // 5) Buscar el item "Conectar" dentro del dropdown interno por TEXTO VISIBLE
+  // 6) Buscar el item "Conectar" dentro del dropdown interno por TEXTO VISIBLE
   const connectButton = dropdownInner
     .locator('div.artdeco-dropdown__item[role="button"]')
     .filter({ hasText: /conectar/i })
@@ -207,7 +270,7 @@ async (page) => {
   // 7) Pequeña espera para que LinkedIn procese la acción
   await page.waitForTimeout(800);
 
-  await debug('Flujo de conexión por popover finalizado');
+  await debug('Flujo de conexión por dropdown finalizado');
 
   // Podrías extender esto para rellenar nota si LinkedIn abre un modal de "Añadir nota".
   // Devolvemos un resultado simple para que aparezca en toolResult.
@@ -231,11 +294,14 @@ async (page) => {
         };
       }
 
+      const connectionMethod = result?.viaDirect ? 'botón directo "Conectar"' : 'dropdown "Más acciones"';
+      const selectorInfo = result?.selector ? ` (selector: ${result.selector})` : '';
+      
       return {
         ok: true,
         profileUrl,
         notePreview: (note ?? '').slice(0, 80),
-        note: 'Solicitud de conexión enviada vía browser_run_code usando el popover de "Más acciones".',
+        note: `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`,
         toolResult: result,
       };
     } catch (e: any) {
