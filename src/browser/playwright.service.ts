@@ -269,7 +269,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   }
 
   async listSessions(): Promise<{ sessionId: string; lastUsedAt: number; url: string }[]> {
-    const sessions = [];
+    const sessions: { sessionId: string; lastUsedAt: number; url: string }[] = [];
     
     for (const [sessionId, session] of this.sessions.entries()) {
       try {
@@ -293,7 +293,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
   // Compatibility methods for gradual migration
   
-  async callTool(name: string, args?: any, sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<any>;
+  async callTool(name: string, args?: any): Promise<any>;
   async callTool(sessionId: SessionId, name: string, args?: any): Promise<any>;
   async callTool(a: string, b?: any, c?: any): Promise<any> {
     let sessionId: SessionId = this.DEFAULT_SESSION_ID;

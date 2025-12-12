@@ -100,6 +100,6 @@ export class LinkedinController {
     },
   ) {
     const sessionId = body?.sessionId ?? 'default';
-    return this.mcp.stopSession(sessionId);
+    return this.playwright.stopSession(sessionId);
   }
 }
