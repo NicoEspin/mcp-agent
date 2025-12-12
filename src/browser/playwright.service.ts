@@ -35,6 +35,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(PlaywrightService.name);
   private browser: Browser | null = null;
   private sessions = new Map<SessionId, BrowserSession>();
+  private sessionKeepalives = new Map<SessionId, NodeJS.Timeout>();
   private readonly DEFAULT_SESSION_ID = 'default';
 
   constructor(private readonly config: ConfigService) {}
@@ -197,6 +198,9 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       // Small delay to ensure page is fully initialized
       await new Promise(resolve => setTimeout(resolve, 100));
 
+      // Set up session keepalive to prevent timeouts
+      this.setupSessionKeepalive(sessionId);
+
       session = {
         context,
         page,
@@ -217,19 +221,28 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     try {
       // Check if page is still accessible
       if (session.page.isClosed()) {
+        this.logger.warn('Session invalid: page is closed');
         return false;
       }
 
       // Check if context is still valid
       if (!session.context || session.context.browser() === null) {
+        this.logger.warn('Session invalid: context or browser is null');
         return false;
       }
 
       // Try a simple operation to ensure the session is responsive
       await session.page.evaluate(() => document.title);
+      
+      // Check if page has content (not about:blank without navigation)
+      const url = session.page.url();
+      if (url === 'about:blank') {
+        this.logger.debug('Session has about:blank page, this is normal for new sessions');
+      }
+      
       return true;
     } catch (error) {
-      this.logger.debug(`Session validation failed: ${error.message}`);
+      this.logger.warn(`Session validation failed: ${error.message}`);
       return false;
     }
   }
@@ -249,6 +262,44 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       }
       this.sessions.delete(sessionId);
     }
+
+    // Clean up keepalive timer
+    const keepalive = this.sessionKeepalives.get(sessionId);
+    if (keepalive) {
+      clearInterval(keepalive);
+      this.sessionKeepalives.delete(sessionId);
+    }
+  }
+
+  private setupSessionKeepalive(sessionId: SessionId): void {
+    // Clear existing keepalive if any
+    const existing = this.sessionKeepalives.get(sessionId);
+    if (existing) {
+      clearInterval(existing);
+    }
+
+    // Set up keepalive that evaluates a simple script every 30 seconds
+    const keepalive = setInterval(async () => {
+      try {
+        const session = this.sessions.get(sessionId);
+        if (session && !session.page.isClosed()) {
+          // Simple keepalive - just evaluate document.title
+          await session.page.evaluate(() => document.title);
+          session.lastUsedAt = Date.now();
+          this.logger.debug(`Session ${sessionId} keepalive successful`);
+        } else {
+          this.logger.warn(`Session ${sessionId} keepalive failed - session invalid`);
+          clearInterval(keepalive);
+          this.sessionKeepalives.delete(sessionId);
+        }
+      } catch (error) {
+        this.logger.error(`Session ${sessionId} keepalive error: ${error.message}`);
+        // Don't clear on error, might be temporary
+      }
+    }, 30000); // Every 30 seconds
+
+    this.sessionKeepalives.set(sessionId, keepalive);
+    this.logger.debug(`Session ${sessionId} keepalive started`);
   }
 
   private getViewportSize() {

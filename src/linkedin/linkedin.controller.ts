@@ -157,4 +157,64 @@ export class LinkedinController {
     const result = await this.playwright.runCode(code, body.sessionId);
     return result;
   }
+
+  // -------------------
+  // type (POST)
+  // -------------------
+  @Post('type')
+  async type(
+    @Body()
+    body: {
+      sessionId: string;
+      x: number;
+      y: number;
+      text: string;
+    },
+  ) {
+    const code = `
+      const x = ${body.x};
+      const y = ${body.y};
+      const text = ${JSON.stringify(body.text)};
+      const element = document.elementFromPoint(x, y);
+      
+      if (element) {
+        // Focus the element first
+        element.focus();
+        
+        // Clear existing content if it's an input
+        if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+          element.value = '';
+        } else if (element.contentEditable === 'true') {
+          element.textContent = '';
+        }
+        
+        // Type the text
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+        
+        if (element.tagName === 'INPUT' || element.tagName === 'TEXTAREA') {
+          element.value = text;
+        } else if (element.contentEditable === 'true') {
+          element.textContent = text;
+        }
+        
+        // Trigger change events
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+        element.dispatchEvent(new Event('blur', { bubbles: true }));
+        
+        return { 
+          success: true, 
+          element: element.tagName, 
+          x, 
+          y, 
+          text,
+          elementType: element.type || 'unknown'
+        };
+      } else {
+        return { success: false, message: 'No element found at coordinates', x, y };
+      }
+    `;
+
+    const result = await this.playwright.runCode(code, body.sessionId);
+    return result;
+  }
 }

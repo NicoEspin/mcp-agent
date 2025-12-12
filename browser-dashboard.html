@@ -570,6 +570,23 @@
                     <button class="btn-danger" onclick="deleteSession('${sessionId}')">Delete</button>
                 </div>
 
+                <div style="padding: 10px 20px; background: #f8f9fa; border-top: 1px solid #e2e8f0;">
+                    <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
+                        <label style="font-size: 12px; font-weight: 500;">FPS:</label>
+                        <select id="fps-${sessionId}" style="padding: 4px 8px; font-size: 12px; border: 1px solid #e1e5e9; border-radius: 4px;">
+                            <option value="1">1 FPS</option>
+                            <option value="2" selected>2 FPS</option>
+                            <option value="3">3 FPS</option>
+                            <option value="5">5 FPS</option>
+                            <option value="10">10 FPS</option>
+                        </select>
+                        <button class="btn-primary" onclick="updateStreamFPS('${sessionId}')" style="padding: 4px 12px; font-size: 12px;">Update FPS</button>
+                        <div style="flex: 1;"></div>
+                        <label style="font-size: 12px; font-weight: 500;">Mode:</label>
+                        <button id="mode-${sessionId}" class="btn-primary" onclick="toggleInteractionMode('${sessionId}')" style="padding: 4px 12px; font-size: 12px;">Click Mode</button>
+                    </div>
+                </div>
+
                 <div class="screen-container">
                     <div class="screen-viewer" id="screen-${sessionId}">
                         <div class="screen-placeholder">Click "Start" to initialize session</div>
@@ -694,84 +711,19 @@
                 sessionData.socket.disconnect();
             }
 
+            // Get current FPS setting or default to 2
+            const fpsSelect = document.getElementById(`fps-${sessionId}`);
+            const fps = fpsSelect ? parseInt(fpsSelect.value) : 2;
+
             // Create new socket connection for this session
             const socket = io(`${baseUrl}/api/zion/stream`, {
-                path: "/api/zion/socket.io",   // ✅ clave
-                query: { sessionId, fps: 2 },
+                path: "/api/zion/socket.io",
+                query: { sessionId, fps: fps },
                 transports: ["websocket", "polling"],
             });
 
-
             sessionData.socket = socket;
-
-            let frameCount = 0;
-            let lastFpsUpdate = Date.now();
-
-            socket.on('connect', () => {
-                addLog(sessionId, 'Stream connected', 'info');
-                document.getElementById(`fps-${sessionId}`).style.display = 'block';
-                
-                // Update placeholder to indicate we're waiting for first frame
-                const screenContainer = document.getElementById(`screen-${sessionId}`);
-                if (screenContainer && !screenContainer.querySelector('img')) {
-                    screenContainer.innerHTML = `
-                        <div class="screen-placeholder">Stream connected, waiting for first screenshot...</div>
-                        <div class="fps-indicator" id="fps-${sessionId}">0 FPS</div>
-                    `;
-                }
-                
-                // Set a timeout to show error if no frames received after 10 seconds
-                setTimeout(() => {
-                    if (screenContainer && screenContainer.querySelector('.screen-placeholder')) {
-                        const placeholder = screenContainer.querySelector('.screen-placeholder');
-                        if (placeholder && placeholder.textContent.includes('waiting for first screenshot')) {
-                            placeholder.textContent = 'No screenshots received. Browser session may not be active or accessible.';
-                            addLog(sessionId, 'No screenshots received after 10 seconds. Check if browser session is properly initialized.', 'warning');
-                        }
-                    }
-                }, 10000);
-            });
-
-            socket.on('frame', (data) => {
-                frameCount++;
-                const now = Date.now();
-
-                // Update FPS every second
-                if (now - lastFpsUpdate >= 1000) {
-                    const fps = Math.round(frameCount * 1000 / (now - lastFpsUpdate));
-                    document.getElementById(`fps-${sessionId}`).textContent = `${fps} FPS`;
-                    frameCount = 0;
-                    lastFpsUpdate = now;
-                }
-
-                // Update screen
-                const screenContainer = document.getElementById(`screen-${sessionId}`);
-                if (screenContainer) {
-                    screenContainer.innerHTML = `
-                        <img src="data:${data.mimeType};base64,${data.data}" alt="Browser Screen" style="cursor: pointer;" onclick="handleScreenClick(event, '${sessionId}')">
-                        <div class="fps-indicator" id="fps-${sessionId}">${document.getElementById(`fps-${sessionId}`) ? document.getElementById(`fps-${sessionId}`).textContent : '0 FPS'}</div>
-                    `;
-                }
-
-                sessionData.lastFrame = data;
-            });
-
-            socket.on('frame_error', (error) => {
-                const errorMsg = error.message || 'Unknown stream error';
-                addLog(sessionId, `Stream error: ${errorMsg}`, 'error');
-                const screenContainer = document.getElementById(`screen-${sessionId}`);
-                if (screenContainer) {
-                    screenContainer.innerHTML = `
-                        <div class="screen-placeholder">Stream Error: ${errorMsg}<br><small>Try restarting the session or check browser logs</small></div>
-                        <div class="fps-indicator" id="fps-${sessionId}" style="display: none;">0 FPS</div>
-                    `;
-                }
-            });
-
-            socket.on('disconnect', () => {
-                addLog(sessionId, 'Stream disconnected', 'warning');
-                document.getElementById(`fps-${sessionId}`).style.display = 'none';
-            });
+            setupSocketEvents(socket, sessionId);
         }
 
         function stopSession(sessionId) {
@@ -989,6 +941,9 @@
                 });
         }
 
+        // Global state for interaction modes
+        const interactionModes = new Map(); // sessionId -> 'click' | 'type'
+
         function handleScreenClick(event, sessionId) {
             event.preventDefault();
             
@@ -1005,8 +960,18 @@
             
             const actualX = Math.round(x * scaleX);
             const actualY = Math.round(y * scaleY);
-            
-            addLog(sessionId, `Click at (${actualX}, ${actualY})`, 'info');
+
+            const mode = interactionModes.get(sessionId) || 'click';
+
+            if (mode === 'click') {
+                handleClick(sessionId, actualX, actualY);
+            } else if (mode === 'type') {
+                handleType(sessionId, actualX, actualY);
+            }
+        }
+
+        function handleClick(sessionId, x, y) {
+            addLog(sessionId, `Click at (${x}, ${y})`, 'info');
             
             // Send click to server
             fetch(`${baseUrl}/api/zion/linkedin/click`, {
@@ -1014,8 +979,8 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     sessionId: sessionId,
-                    x: actualX,
-                    y: actualY
+                    x: x,
+                    y: y
                 })
             })
                 .then(res => res.json())
@@ -1029,6 +994,147 @@
                 .catch(err => {
                     addLog(sessionId, `Click failed: ${err.message}`, 'error');
                 });
+        }
+
+        function handleType(sessionId, x, y) {
+            const text = prompt('Enter text to type:');
+            if (text === null || text === '') {
+                return; // User cancelled or entered empty text
+            }
+
+            addLog(sessionId, `Type "${text}" at (${x}, ${y})`, 'info');
+            
+            // Send type to server
+            fetch(`${baseUrl}/api/zion/linkedin/type`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionId: sessionId,
+                    x: x,
+                    y: y,
+                    text: text
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        addLog(sessionId, `Type successful on ${data.element} (${data.elementType})`, 'info');
+                    } else {
+                        addLog(sessionId, `Type failed: ${data.message}`, 'warning');
+                    }
+                })
+                .catch(err => {
+                    addLog(sessionId, `Type failed: ${err.message}`, 'error');
+                });
+        }
+
+        function toggleInteractionMode(sessionId) {
+            const currentMode = interactionModes.get(sessionId) || 'click';
+            const newMode = currentMode === 'click' ? 'type' : 'click';
+            interactionModes.set(sessionId, newMode);
+            
+            const button = document.getElementById(`mode-${sessionId}`);
+            button.textContent = newMode === 'click' ? 'Click Mode' : 'Type Mode';
+            button.className = newMode === 'click' ? 'btn-primary' : 'btn-success';
+            
+            addLog(sessionId, `Switched to ${newMode} mode`, 'info');
+        }
+
+        function updateStreamFPS(sessionId) {
+            const fpsSelect = document.getElementById(`fps-${sessionId}`);
+            const newFps = parseInt(fpsSelect.value);
+            
+            addLog(sessionId, `Updating FPS to ${newFps}...`, 'info');
+            
+            // Restart streaming with new FPS
+            const sessionData = sessions.get(sessionId);
+            if (sessionData && sessionData.socket) {
+                sessionData.socket.disconnect();
+                
+                // Wait a bit then reconnect with new FPS
+                setTimeout(() => {
+                    const socket = io(`${baseUrl}/api/zion/stream`, {
+                        path: "/api/zion/socket.io",
+                        query: { sessionId, fps: newFps },
+                        transports: ["websocket", "polling"],
+                    });
+                    
+                    sessionData.socket = socket;
+                    setupSocketEvents(socket, sessionId);
+                    addLog(sessionId, `FPS updated to ${newFps}`, 'info');
+                }, 500);
+            }
+        }
+
+        function setupSocketEvents(socket, sessionId) {
+            let frameCount = 0;
+            let lastFpsUpdate = Date.now();
+
+            socket.on('connect', () => {
+                addLog(sessionId, 'Stream connected', 'info');
+                document.getElementById(`fps-${sessionId}`).style.display = 'block';
+                
+                // Update placeholder to indicate we're waiting for first frame
+                const screenContainer = document.getElementById(`screen-${sessionId}`);
+                if (screenContainer && !screenContainer.querySelector('img')) {
+                    screenContainer.innerHTML = `
+                        <div class="screen-placeholder">Stream connected, waiting for first screenshot...</div>
+                        <div class="fps-indicator" id="fps-${sessionId}">0 FPS</div>
+                    `;
+                }
+                
+                // Set a timeout to show error if no frames received after 10 seconds
+                setTimeout(() => {
+                    if (screenContainer && screenContainer.querySelector('.screen-placeholder')) {
+                        const placeholder = screenContainer.querySelector('.screen-placeholder');
+                        if (placeholder && placeholder.textContent.includes('waiting for first screenshot')) {
+                            placeholder.textContent = 'No screenshots received. Browser session may not be active or accessible.';
+                            addLog(sessionId, 'No screenshots received after 10 seconds. Check if browser session is properly initialized.', 'warning');
+                        }
+                    }
+                }, 10000);
+            });
+
+            socket.on('frame', (data) => {
+                frameCount++;
+                const now = Date.now();
+
+                // Update FPS every second
+                if (now - lastFpsUpdate >= 1000) {
+                    const fps = Math.round(frameCount * 1000 / (now - lastFpsUpdate));
+                    document.getElementById(`fps-${sessionId}`).textContent = `${fps} FPS`;
+                    frameCount = 0;
+                    lastFpsUpdate = now;
+                }
+
+                // Update screen
+                const screenContainer = document.getElementById(`screen-${sessionId}`);
+                if (screenContainer) {
+                    screenContainer.innerHTML = `
+                        <img src="data:${data.mimeType};base64,${data.data}" alt="Browser Screen" style="cursor: pointer;" onclick="handleScreenClick(event, '${sessionId}')">
+                        <div class="fps-indicator" id="fps-${sessionId}">${document.getElementById(`fps-${sessionId}`) ? document.getElementById(`fps-${sessionId}`).textContent : '0 FPS'}</div>
+                    `;
+                }
+
+                sessionData.lastFrame = data;
+            });
+
+            socket.on('frame_error', (error) => {
+                const errorMsg = error.message || 'Unknown stream error';
+                addLog(sessionId, `Stream error: ${errorMsg}`, 'error');
+                const screenContainer = document.getElementById(`screen-${sessionId}`);
+                if (screenContainer) {
+                    screenContainer.innerHTML = `
+                        <div class="screen-placeholder">Stream Error: ${errorMsg}<br><small>Try restarting the session or check browser logs</small></div>
+                        <div class="fps-indicator" id="fps-${sessionId}" style="display: none;">0 FPS</div>
+                    `;
+                }
+            });
+
+            socket.on('disconnect', () => {
+                addLog(sessionId, 'Stream disconnected', 'warning');
+                document.getElementById(`fps-${sessionId}`).style.display = 'none';
+            });
         }
 
         // Initialize by loading existing sessions
