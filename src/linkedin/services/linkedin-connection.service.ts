@@ -22,6 +22,22 @@ export class LinkedinConnectionService {
     });
   }
 
+  /**
+   * Check if user is logged into LinkedIn and log status
+   */
+  private async checkAndLogLinkedInAuth(sessionId: SessionId): Promise<boolean> {
+    const isLoggedIn = await this.playwright.isLinkedInLoggedIn(sessionId);
+    const authToken = isLoggedIn ? await this.playwright.getLinkedInAuthToken(sessionId) : null;
+    
+    if (isLoggedIn && authToken) {
+      this.logger.log(`✅ LinkedIn authenticated for session ${sessionId} (li_at: ${authToken.slice(0, 10)}...)`);
+    } else {
+      this.logger.warn(`❌ LinkedIn NOT authenticated for session ${sessionId} - user needs to login`);
+    }
+    
+    return isLoggedIn;
+  }
+
   // session-aware
   private async hasTool(sessionId: SessionId, name: string) {
     return this.playwright.hasTool(name);
@@ -56,6 +72,13 @@ export class LinkedinConnectionService {
     sessionId: SessionId,
     profileUrl: string,
   ): Promise<boolean> {
+    // Check LinkedIn authentication status before proceeding
+    const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
+    if (!isAuthenticated) {
+      this.logger.warn(`Cannot check connection - user not logged into LinkedIn (session: ${sessionId})`);
+      return false;
+    }
+
     const { base64, mimeType } = await this.captureProfileScreenshot(
       sessionId,
       profileUrl,
@@ -120,6 +143,16 @@ Reglas de salida:
     profileUrl: string,
     note?: string,
   ) {
+    // Check LinkedIn authentication status before proceeding
+    const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
+    if (!isAuthenticated) {
+      return {
+        ok: false,
+        error: 'User not logged into LinkedIn',
+        detail: 'Please login to LinkedIn first before attempting to send connections',
+      };
+    }
+
     // Direct Playwright execution
 
     // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
