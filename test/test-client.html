@@ -252,7 +252,7 @@
 
             <!-- LINKEDIN CARD -->
             <div class="card">
-                <div class="title">Probar api/v1/linkedin/*</div>
+                <div class="title">Probar api/zion/linkedin/*</div>
                 <div class="muted">
                     Estos endpoints usan tu flujo real del servicio. El backend debe
                     tener acceso a <code>OPENAI_API_KEY</code> en el
@@ -333,8 +333,8 @@
             // path ejemplo: "send-message", "read-chat"
             const base = getBaseUrl();
             const prefix = isAgentMode()
-                ? "/api/v1/linkedin/agent"
-                : "/api/v1/linkedin";
+                ? "/api/zion/linkedin/agent"
+                : "/api/zion/linkedin";
             return `${base}${prefix}/${path}`;
         }
 
@@ -435,7 +435,7 @@
         (async function bootHealth() {
             const baseUrl = baseUrlInput.value.trim().replace(/\/$/, "");
             try {
-                const res = await fetch(`${baseUrl}/api/v1/mcp/health`);
+                const res = await fetch(`${baseUrl}/api/zion/mcp/health`);
                 if (res.ok) {
                     setWsBadge("desconectado");
                 } else {
@@ -555,7 +555,7 @@
 
                 try {
                     const res = await fetch(
-                        `${baseUrl}/api/v1/linkedin/check-connection`,
+                        `${baseUrl}/api/zion/linkedin/check-connection`,
                         {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
