@@ -191,6 +191,12 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       page.setDefaultTimeout(this.getTimeoutAction());
       page.setDefaultNavigationTimeout(this.getTimeoutNavigation());
 
+      // Navigate to a blank page to ensure the page is ready for screenshots
+      await page.goto('about:blank', { waitUntil: 'domcontentloaded' });
+      
+      // Small delay to ensure page is fully initialized
+      await new Promise(resolve => setTimeout(resolve, 100));
+
       session = {
         context,
         page,

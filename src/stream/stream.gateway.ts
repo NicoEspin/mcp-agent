@@ -49,25 +49,44 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
       (sessionIdRaw && String(sessionIdRaw)) || 'default';
 
     this.logger.log(
-      `Client connected ${client.id} (fps=${fps}, sessionId=${sessionId})`,
+      `🔌 WebSocket client connected ${client.id} (fps=${fps}, sessionId=${sessionId}, interval=${intervalMs}ms)`,
     );
 
-    // Primer frame en caliente
-    this.streamService.getScreenshotBase64(sessionId).catch(() => {});
+    // Try to get the first frame immediately and send it
+    this.streamService.getScreenshotBase64(sessionId)
+      .then((result) => {
+        this.logger.debug(`Initial screenshot successful for session ${sessionId}, data length: ${result.data.length}`);
+        // Send the first frame immediately
+        client.emit('frame', {
+          data: result.data,
+          mimeType: result.mimeType,
+          ts: Date.now(),
+        });
+        this.logger.debug(`Initial frame emitted to client ${client.id}`);
+      })
+      .catch((error) => {
+        this.logger.warn(`Initial screenshot failed for session ${sessionId}: ${error.message}`);
+        client.emit('frame_error', {
+          message: `Initial screenshot failed: ${error.message}`,
+        });
+      });
 
     const timer = setInterval(async () => {
       try {
         const { data, mimeType } =
           await this.streamService.getScreenshotBase64(sessionId);
 
+        this.logger.debug(`Emitting frame for session ${sessionId}, size: ${data.length} bytes`);
         client.emit('frame', {
           data,
           mimeType,
           ts: Date.now(),
         });
       } catch (err: any) {
+        const errorMessage = err?.message ?? 'Unknown streaming error';
+        this.logger.error(`Stream error for session ${sessionId}: ${errorMessage}`);
         client.emit('frame_error', {
-          message: err?.message ?? 'Unknown streaming error',
+          message: errorMessage,
         });
       }
     }, intervalMs);
