@@ -768,10 +768,32 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   // Cookie management methods
 
   /**
-   * Check if user is logged into LinkedIn
+   * Check if user is logged into LinkedIn (combines real-time and saved cookie checks)
    */
   async isLinkedInLoggedIn(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<boolean> {
-    return this.cookieManager.isLinkedInLoggedIn(sessionId);
+    try {
+      const session = await this.getSession(sessionId);
+      
+      // First check real-time cookies from browser context (most accurate)
+      const realTimeResult = await this.cookieManager.isLinkedInLoggedInRealTime(sessionId, session.context);
+      
+      if (realTimeResult) {
+        // If real-time check shows logged in, save the cookies immediately
+        await this.cookieManager.saveCookies(sessionId, session.context, 'linkedin.com');
+        return true;
+      }
+
+      // Fallback to saved cookies check
+      const savedResult = await this.cookieManager.isLinkedInLoggedIn(sessionId);
+      
+      this.logger.debug(`LinkedIn login check for session ${sessionId}: real-time=${realTimeResult}, saved=${savedResult}`);
+      return savedResult;
+      
+    } catch (error) {
+      this.logger.warn(`Error checking LinkedIn login status for session ${sessionId}: ${error}`);
+      // Fallback to saved cookies only
+      return this.cookieManager.isLinkedInLoggedIn(sessionId);
+    }
   }
 
   /**
@@ -818,20 +840,21 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     try {
       const session = await this.getSession(sessionId);
       
-      // Force save cookies immediately
-      await this.cookieManager.saveCookies(sessionId, session.context, 'linkedin.com');
+      // Force real-time check first 
+      const isLoggedIn = await this.cookieManager.isLinkedInLoggedInRealTime(sessionId, session.context);
       
-      // Check current login status
-      const isLoggedIn = await this.isLinkedInLoggedIn(sessionId);
-      const authToken = isLoggedIn ? await this.getLinkedInAuthToken(sessionId) : null;
-      
-      if (isLoggedIn && authToken) {
-        this.logger.log(`🔄 Force check - LinkedIn authenticated for session ${sessionId} (li_at: ${authToken.slice(0, 10)}...)`);
+      if (isLoggedIn) {
+        // Force save cookies immediately if logged in
+        await this.cookieManager.saveCookies(sessionId, session.context, 'linkedin.com');
+        const authToken = await this.cookieManager.extractLinkedInAuth(sessionId, session.page);
+        
+        this.logger.log(`🔄 Force check - LinkedIn authenticated for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`);
+        return { isLoggedIn: true, authToken };
       } else {
         this.logger.log(`🔄 Force check - LinkedIn NOT authenticated for session ${sessionId}`);
+        return { isLoggedIn: false, authToken: null };
       }
       
-      return { isLoggedIn, authToken };
     } catch (error) {
       this.logger.error(`Force cookie check failed for session ${sessionId}: ${error}`);
       return { isLoggedIn: false, authToken: null };

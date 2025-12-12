@@ -37,7 +37,7 @@ export class CookieManagerService {
   }
 
   /**
-   * Check if user is logged into LinkedIn based on li_at cookie presence
+   * Check if user is logged into LinkedIn based on li_at cookie presence (from saved files)
    */
   async isLinkedInLoggedIn(sessionId: string): Promise<boolean> {
     try {
@@ -64,16 +64,119 @@ export class CookieManagerService {
   }
 
   /**
+   * Check if user is logged into LinkedIn by directly checking browser context (real-time)
+   */
+  async isLinkedInLoggedInRealTime(sessionId: string, context: BrowserContext): Promise<boolean> {
+    try {
+      // Get cookies from multiple LinkedIn URLs
+      const linkedinUrls = [
+        'https://www.linkedin.com',
+        'https://linkedin.com', 
+        'https://www.linkedin.com/',
+        'https://linkedin.com/',
+      ];
+
+      let allCookies: any[] = [];
+      
+      // Try each URL to get cookies
+      for (const url of linkedinUrls) {
+        try {
+          const urlCookies = await context.cookies(url);
+          allCookies = allCookies.concat(urlCookies);
+        } catch (error) {
+          this.logger.debug(`Failed to get cookies from ${url}: ${error}`);
+        }
+      }
+
+      // Also get all cookies without URL filter as fallback
+      try {
+        const generalCookies = await context.cookies();
+        allCookies = allCookies.concat(generalCookies);
+      } catch (error) {
+        this.logger.debug(`Failed to get general cookies: ${error}`);
+      }
+
+      // Remove duplicates and find li_at
+      const uniqueCookies = allCookies.filter((cookie, index, self) => 
+        index === self.findIndex(c => c.name === cookie.name && c.domain === cookie.domain)
+      );
+
+      const liAtCookie = uniqueCookies.find(cookie => cookie.name === 'li_at');
+      
+      if (!liAtCookie) {
+        this.logger.debug(`🔍 Real-time check: No li_at cookie found for session ${sessionId} (checked ${uniqueCookies.length} cookies)`);
+        return false;
+      }
+
+      // Check if cookie is expired
+      if (liAtCookie.expires && liAtCookie.expires < Date.now()) {
+        this.logger.debug(`🔍 Real-time check: li_at cookie expired for session ${sessionId}`);
+        return false;
+      }
+
+      this.logger.log(`🔍 Real-time check: Valid li_at cookie found for session ${sessionId} (${liAtCookie.value.slice(0, 10)}... domain: ${liAtCookie.domain})`);
+      return true;
+    } catch (error) {
+      this.logger.warn(`Error in real-time LinkedIn login check: ${error}`);
+      return false;
+    }
+  }
+
+  /**
    * Save cookies from browser context to file
    */
   async saveCookies(sessionId: string, context: BrowserContext, domain: string = 'linkedin.com'): Promise<void> {
     try {
-      const cookies = await context.cookies();
+      // Get cookies from multiple LinkedIn URLs to ensure we catch li_at
+      const linkedinUrls = [
+        'https://www.linkedin.com',
+        'https://linkedin.com', 
+        'https://www.linkedin.com/',
+        'https://linkedin.com/',
+      ];
+
+      let allCookies: any[] = [];
       
-      // Filter cookies for the specific domain
-      const domainCookies = cookies.filter(cookie => 
-        cookie.domain === domain || cookie.domain === `.${domain}`
+      // Try each URL to get cookies
+      for (const url of linkedinUrls) {
+        try {
+          const urlCookies = await context.cookies(url);
+          allCookies = allCookies.concat(urlCookies);
+          this.logger.debug(`Retrieved ${urlCookies.length} cookies from ${url} for session ${sessionId}`);
+        } catch (error) {
+          this.logger.debug(`Failed to get cookies from ${url}: ${error}`);
+        }
+      }
+
+      // Also get all cookies without URL filter as fallback
+      try {
+        const generalCookies = await context.cookies();
+        allCookies = allCookies.concat(generalCookies);
+        this.logger.debug(`Retrieved ${generalCookies.length} general cookies for session ${sessionId}`);
+      } catch (error) {
+        this.logger.debug(`Failed to get general cookies: ${error}`);
+      }
+
+      // Remove duplicates based on name+domain
+      const uniqueCookies = allCookies.filter((cookie, index, self) => 
+        index === self.findIndex(c => c.name === cookie.name && c.domain === cookie.domain)
       );
+
+      // Filter cookies for LinkedIn domains (much more flexible)
+      const domainCookies = uniqueCookies.filter(cookie => {
+        const cookieDomain = cookie.domain.toLowerCase();
+        return cookieDomain.includes('linkedin.com') || 
+               cookieDomain === domain || 
+               cookieDomain === `.${domain}` ||
+               cookieDomain === `www.${domain}` ||
+               cookieDomain.endsWith('.linkedin.com');
+      });
+
+      // Debug: Log all cookie names and domains we found
+      this.logger.debug(`Found ${domainCookies.length} LinkedIn cookies for session ${sessionId}:`);
+      domainCookies.forEach(cookie => {
+        this.logger.debug(`  Cookie: ${cookie.name} (domain: ${cookie.domain})`);
+      });
 
       const sessionCookies: SessionCookies = {
         sessionId,
@@ -87,9 +190,9 @@ export class CookieManagerService {
       
       const liAtCookie = domainCookies.find(c => c.name === 'li_at');
       if (liAtCookie) {
-        this.logger.log(`LinkedIn cookies saved for session ${sessionId} (li_at: ${liAtCookie.value.slice(0, 10)}...)`);
+        this.logger.log(`✅ LinkedIn cookies saved for session ${sessionId} (li_at: ${liAtCookie.value.slice(0, 10)}... domain: ${liAtCookie.domain})`);
       } else {
-        this.logger.log(`Cookies saved for session ${sessionId} (no li_at found)`);
+        this.logger.warn(`⚠️ Cookies saved for session ${sessionId} but NO li_at found! Found cookies: ${domainCookies.map(c => c.name).join(', ')}`);
       }
     } catch (error) {
       this.logger.error(`Error saving cookies for session ${sessionId}: ${error}`);
@@ -170,24 +273,62 @@ export class CookieManagerService {
    */
   async extractLinkedInAuth(sessionId: string, page: Page): Promise<string | null> {
     try {
-      // Get all cookies for LinkedIn domain
-      const cookies = await page.context().cookies('https://www.linkedin.com');
-      const liAtCookie = cookies.find(cookie => cookie.name === 'li_at');
+      // Use real-time check to get li_at cookie
+      const context = page.context();
+      const isLoggedIn = await this.isLinkedInLoggedInRealTime(sessionId, context);
+      
+      if (!isLoggedIn) {
+        this.logger.debug(`No li_at cookie found in real-time check for session ${sessionId}`);
+        return null;
+      }
+
+      // Get the actual li_at cookie value using the same comprehensive approach
+      const linkedinUrls = [
+        'https://www.linkedin.com',
+        'https://linkedin.com', 
+        'https://www.linkedin.com/',
+        'https://linkedin.com/',
+      ];
+
+      let allCookies: any[] = [];
+      
+      for (const url of linkedinUrls) {
+        try {
+          const urlCookies = await context.cookies(url);
+          allCookies = allCookies.concat(urlCookies);
+        } catch (error) {
+          this.logger.debug(`Failed to get cookies from ${url}: ${error}`);
+        }
+      }
+
+      // Also get all cookies as fallback
+      try {
+        const generalCookies = await context.cookies();
+        allCookies = allCookies.concat(generalCookies);
+      } catch (error) {
+        this.logger.debug(`Failed to get general cookies: ${error}`);
+      }
+
+      const uniqueCookies = allCookies.filter((cookie, index, self) => 
+        index === self.findIndex(c => c.name === cookie.name && c.domain === cookie.domain)
+      );
+
+      const liAtCookie = uniqueCookies.find(cookie => cookie.name === 'li_at');
       
       if (!liAtCookie) {
-        this.logger.debug(`No li_at cookie found in page for session ${sessionId}`);
+        this.logger.debug(`No li_at cookie found after comprehensive search for session ${sessionId}`);
         return null;
       }
 
       // Save all LinkedIn cookies
-      await this.saveCookies(sessionId, page.context(), 'linkedin.com');
+      await this.saveCookies(sessionId, context, 'linkedin.com');
 
       // Also save just the li_at value to a simple text file for easy access
       const authFilePath = path.join(this.cookiesDir, `${sessionId}_linkedin_auth.txt`);
-      const authData = `sessionId: ${sessionId}\nli_at: ${liAtCookie.value}\ntimestamp: ${new Date().toISOString()}\n`;
+      const authData = `sessionId: ${sessionId}\nli_at: ${liAtCookie.value}\ntimestamp: ${new Date().toISOString()}\ndomain: ${liAtCookie.domain}\n`;
       await fs.promises.writeFile(authFilePath, authData);
 
-      this.logger.log(`LinkedIn auth token extracted for session ${sessionId}`);
+      this.logger.log(`✅ LinkedIn auth token extracted for session ${sessionId} (li_at: ${liAtCookie.value.slice(0, 10)}... domain: ${liAtCookie.domain})`);
       return liAtCookie.value;
     } catch (error) {
       this.logger.error(`Error extracting LinkedIn auth for session ${sessionId}: ${error}`);
