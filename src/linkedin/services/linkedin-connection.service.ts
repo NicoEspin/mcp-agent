@@ -137,8 +137,8 @@ async (page) => {
     try {
       await debug('Verificando si apareció modal de nota');
       
-      // Human-like delay before checking modal
-      await page.waitForTimeout(1000 + Math.random() * 1000); // 1-2 seconds
+      // Realistic human delay before checking modal (7-10 seconds)
+      await page.waitForTimeout(7000 + Math.random() * 3000); // 7-10 seconds
       
       // Multiple selectors for the note modal
       const modalSelectors = [
@@ -198,14 +198,17 @@ async (page) => {
         if (addNoteButton) {
           await debug('Haciendo click en "Añadir una nota"');
           
+          // Realistic human thinking time before clicking (7-12 seconds)
+          await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
+          
           // Human-like delay and hover before click
           await addNoteButton.hover();
-          await page.waitForTimeout(300 + Math.random() * 200); // 300-500ms
+          await page.waitForTimeout(2000 + Math.random() * 2000); // 2-4 seconds hover
           
           await addNoteButton.click({ timeout: 5000 });
           
-          // Wait for textarea to appear
-          await page.waitForTimeout(800 + Math.random() * 400); // 800-1200ms
+          // Wait for textarea to appear (8-12 seconds)
+          await page.waitForTimeout(8000 + Math.random() * 4000); // 8-12 seconds
         }
         
         // STEP 2: Find the textarea (now should be visible)
@@ -240,40 +243,48 @@ async (page) => {
         if (textarea) {
           await debug('Escribiendo nota personalizada');
           
+          // Realistic human thinking time before typing (7-15 seconds)
+          await page.waitForTimeout(7000 + Math.random() * 8000); // 7-15 seconds
+          
           // Human-like interaction with textarea
           await textarea.hover();
-          await page.waitForTimeout(200 + Math.random() * 300); // 200-500ms
+          await page.waitForTimeout(2000 + Math.random() * 3000); // 2-5 seconds hover
           
           await textarea.click();
-          await page.waitForTimeout(100 + Math.random() * 200); // 100-300ms
+          await page.waitForTimeout(1000 + Math.random() * 2000); // 1-3 seconds after click
           
           // Clear existing text and add our note with human typing speed
           await textarea.fill('');
-          await page.waitForTimeout(150 + Math.random() * 100); // 150-250ms
+          await page.waitForTimeout(2000 + Math.random() * 2000); // 2-4 seconds after clear
           
-          // Type with human-like speed and occasional pauses
+          // Type with realistic human speed and pauses
           const chars = note.split('');
           for (let i = 0; i < chars.length; i++) {
             await textarea.type(chars[i]);
             
-            // Variable typing speed
-            let delay = 80 + Math.random() * 120; // 80-200ms per character
+            // Realistic variable typing speed
+            let delay = 150 + Math.random() * 250; // 150-400ms per character
             
-            // Occasional longer pauses (thinking/hesitation)
-            if (Math.random() < 0.1) { // 10% chance
-              delay += 300 + Math.random() * 500; // Extra 300-800ms pause
+            // Frequent longer pauses (thinking/hesitation)
+            if (Math.random() < 0.2) { // 20% chance
+              delay += 1000 + Math.random() * 2000; // Extra 1-3 second pause
             }
             
-            // Pause after punctuation
+            // Longer pause after punctuation
             if (['.', ',', '!', '?'].includes(chars[i])) {
-              delay += 100 + Math.random() * 200; // Extra 100-300ms after punctuation
+              delay += 500 + Math.random() * 1000; // Extra 500ms-1.5s after punctuation
+            }
+            
+            // Pause after spaces (word breaks)
+            if (chars[i] === ' ') {
+              delay += 200 + Math.random() * 400; // Extra 200-600ms after spaces
             }
             
             await page.waitForTimeout(delay);
           }
           
-          // Small pause after typing
-          await page.waitForTimeout(300 + Math.random() * 500); // 300-800ms
+          // Realistic pause after typing to review message (7-12 seconds)
+          await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
           
           await debug('Nota añadida: ' + note.slice(0, 50) + '...');
         } else {
@@ -284,8 +295,8 @@ async (page) => {
       // STEP 3: Click send button with human-like behavior
       await debug('Buscando botón de envío');
       
-      // Human-like delay before looking for send button
-      await page.waitForTimeout(500 + Math.random() * 500); // 500-1000ms
+      // Realistic human delay before looking for send button (7-12 seconds thinking)
+      await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
       
       const sendButtonSelectors = [
         'button:has(span.artdeco-button__text:text("Enviar"))',
@@ -316,17 +327,20 @@ async (page) => {
       if (sendButton) {
         await debug('Preparando envío de conexión');
         
+        // Final thinking time before sending (8-15 seconds - most important pause!)
+        await page.waitForTimeout(8000 + Math.random() * 7000); // 8-15 seconds
+        
         // Human-like interaction with send button
         await sendButton.hover();
-        await page.waitForTimeout(400 + Math.random() * 300); // 400-700ms
+        await page.waitForTimeout(2000 + Math.random() * 3000); // 2-5 seconds hover
         
-        // Small delay before final click (user thinking)
-        await page.waitForTimeout(200 + Math.random() * 400); // 200-600ms
+        // Last moment hesitation before final click (3-7 seconds)
+        await page.waitForTimeout(3000 + Math.random() * 4000); // 3-7 seconds
         
         await sendButton.click({ timeout: 5000 });
         
-        // Wait for the action to complete
-        await page.waitForTimeout(1500 + Math.random() * 1000); // 1.5-2.5 seconds
+        // Wait for the action to complete (7-12 seconds)
+        await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
         
         await debug('Conexión enviada con modal completado');
         return true;
