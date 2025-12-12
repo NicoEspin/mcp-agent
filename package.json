@@ -21,7 +21,6 @@
   },
   "dependencies": {
     "@ai-sdk/openai": "^2.0.77",
-    "@modelcontextprotocol/sdk": "^1.24.3",
     "@nestjs/common": "^11.0.1",
     "@nestjs/config": "^4.0.2",
     "@nestjs/core": "^11.0.1",
@@ -32,6 +31,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.3",
     "openai": "^6.10.0",
+    "playwright": "^1.44.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.1",

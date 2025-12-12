@@ -4,7 +4,7 @@ import * as path from 'path';
 
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
-import { PlaywrightMcpModule } from './mcp/playwright-mcp.module';
+import { BrowserModule } from './browser/browser.module';
 import { LinkedinModule } from './linkedin/linkedin.module';
 import { StreamModule } from './stream/stream.module';
 
@@ -17,7 +17,7 @@ import { StreamModule } from './stream/stream.module';
         path.resolve(process.cwd(), '../.env'),  
       ],
     }),
-    PlaywrightMcpModule,
+    BrowserModule,
     LinkedinModule,
     StreamModule,
   ],

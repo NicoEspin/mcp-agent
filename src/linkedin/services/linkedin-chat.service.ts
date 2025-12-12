@@ -1,7 +1,7 @@
 // src/linkedin/services/linkedin-chat.service.ts
 import { Injectable, Logger } from '@nestjs/common';
-import { PlaywrightMcpService } from '../../mcp/playwright-mcp.service';
-import { extractTools, extractFirstText } from '../utils/mcp-utils';
+import { PlaywrightService } from '../../browser/playwright.service';
+import { extractFirstText } from '../utils/mcp-utils';
 
 type SessionId = string;
 
@@ -9,13 +9,7 @@ type SessionId = string;
 export class LinkedinChatService {
   private readonly logger = new Logger(LinkedinChatService.name);
 
-  constructor(private readonly mcp: PlaywrightMcpService) {}
-
-  private async hasTool(sessionId: SessionId, name: string) {
-    const res = await this.mcp.listTools(sessionId);
-    const tools = extractTools(res);
-    return tools.some((t: any) => t?.name === name);
-  }
+  constructor(private readonly playwright: PlaywrightService) {}
 
   private buildReadChatCode(
     profileUrl: string,
@@ -213,56 +207,17 @@ return JSON.stringify(result);
     limit = 30,
     threadHint?: string,
   ) {
-    const canRunCode = await this.hasTool(sessionId, 'browser_run_code');
-
-    if (!canRunCode) {
-      const canSnapshot = await this.hasTool(sessionId, 'browser_snapshot');
-      if (!canSnapshot) {
-        return {
-          ok: false,
-          error:
-            'Tu servidor MCP no expone browser_run_code ni browser_snapshot. Actualizá @playwright/mcp.',
-        };
-      }
-
-      return {
-        ok: false,
-        error:
-          'Modo snapshot-only no implementado aún para read-chat. Requiere browser_run_code.',
-      };
-    }
-
     const code = this.buildReadChatCode(profileUrl, limit, threadHint);
 
     try {
-      const result: any = await this.mcp.callTool(
-        sessionId,
-        'browser_run_code',
-        { code },
-      );
+      const result = await this.playwright.runCode(code, sessionId);
 
-      if (result?.isError) {
-        return {
-          ok: false,
-          error: 'Playwright MCP error en browser_run_code',
-          detail: result?.content ?? result,
-        };
-      }
-
-      const txt = extractFirstText(result) ?? '';
-      let parsed: any = null;
-
-      try {
-        parsed = JSON.parse(txt);
-      } catch {
-        // texto plano
-      }
-
+      // Result is already the parsed data from the page evaluation
       return {
         ok: true,
         profileUrl,
         limit,
-        data: parsed ?? { raw: txt },
+        data: result,
         toolResult: result,
       };
     } catch (e: any) {
@@ -278,15 +233,7 @@ return JSON.stringify(result);
   // sendMessage multi-sesión
   // -----------------------------
   async sendMessage(sessionId: SessionId, profileUrl: string, message: string) {
-    const canRunCode = await this.hasTool(sessionId, 'browser_run_code');
-
-    if (!canRunCode) {
-      return {
-        ok: false,
-        error:
-          'Tu servidor MCP no expone browser_run_code. Actualizá @playwright/mcp y el SDK.',
-      };
-    }
+    // Direct Playwright execution - no tool checking needed
 
     const code = `
 async (page) => {
@@ -522,30 +469,18 @@ async (page) => {
 `;
 
     try {
-      const result: any = await this.mcp.callTool(
-        sessionId,
-        'browser_run_code',
-        { code },
-      );
+      const result = await this.playwright.runCode(code, sessionId);
 
       this.logger.debug(
-        'browser_run_code result: ' + JSON.stringify(result, null, 2),
+        'playwright result: ' + JSON.stringify(result, null, 2),
       );
-
-      if (result?.isError) {
-        return {
-          ok: false,
-          error: 'Playwright MCP error en browser_run_code',
-          detail: result?.content ?? result,
-        };
-      }
 
       return {
         ok: true,
         profileUrl,
         messagePreview: message.slice(0, 80),
-        note: 'Mensaje intentado vía browser_run_code usando contexto session-aware.',
-        toolResult: result,
+        note: 'Mensaje enviado vía Playwright directo.',
+        result,
       };
     } catch (e: any) {
       this.logger.warn(`sendMessage failed: ${e?.message ?? 'Unknown error'}`);

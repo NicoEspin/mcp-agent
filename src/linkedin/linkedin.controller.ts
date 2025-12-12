@@ -1,7 +1,7 @@
 // src/linkedin/linkedin.controller.ts
 import { Body, Controller, Post, Get, Query } from '@nestjs/common';
 import { LinkedinService } from './linkedin.service';
-import { PlaywrightMcpService } from '../mcp/playwright-mcp.service';
+import { PlaywrightService } from '../browser/playwright.service';
 import { LinkedinSessionService } from './session/linkedin-session.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { SendConnectionDto } from './dto/send-connection.dto';
@@ -12,7 +12,7 @@ import { ReadChatDto } from './dto/read-chat.dto';
 export class LinkedinController {
   constructor(
     private readonly linkedin: LinkedinService,
-    private readonly mcp: PlaywrightMcpService,
+    private readonly playwright: PlaywrightService,
     private readonly sessionService: LinkedinSessionService,
   ) {}
 
@@ -76,9 +76,8 @@ export class LinkedinController {
     const sessionId = body?.sessionId ?? 'default';
 
     // Esto forzará la apertura de Chromium si está en modo headed
-    return this.mcp.callTool(sessionId, 'browser_navigate', {
-      url: 'https://www.linkedin.com/',
-    });
+    await this.playwright.navigate('https://www.linkedin.com/', sessionId);
+    return { success: true, url: 'https://www.linkedin.com/', sessionId };
   }
 
   // -------------------

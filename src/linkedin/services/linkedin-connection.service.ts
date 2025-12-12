@@ -1,10 +1,9 @@
 // src/linkedin/services/linkedin-connection.service.ts
 import { Injectable, Logger } from '@nestjs/common';
-import { PlaywrightMcpService } from '../../mcp/playwright-mcp.service';
+import { PlaywrightService } from '../../browser/playwright.service';
 import { ConfigService } from '@nestjs/config';
 import { StreamService } from '../../stream/stream.service';
 import OpenAI from 'openai';
-import { extractTools } from '../utils/mcp-utils';
 
 type SessionId = string;
 
@@ -14,7 +13,7 @@ export class LinkedinConnectionService {
   private readonly openai: OpenAI;
 
   constructor(
-    private readonly mcp: PlaywrightMcpService,
+    private readonly playwright: PlaywrightService,
     private readonly config: ConfigService,
     private readonly stream: StreamService,
   ) {
@@ -37,14 +36,7 @@ export class LinkedinConnectionService {
     base64: string;
     mimeType: string;
   }> {
-    const canNavigate = await this.hasTool(sessionId, 'browser_navigate');
-    if (!canNavigate) {
-      throw new Error(
-        'Tu servidor MCP no expone browser_navigate. Revisá flags/caps del MCP.',
-      );
-    }
-
-    await this.mcp.callTool(sessionId, 'browser_navigate', { url: profileUrl });
+    await this.playwright.navigate(profileUrl, sessionId);
     await new Promise((r) => setTimeout(r, 1200));
 
     const { data, mimeType } = await this.stream.getCachedScreenshotBase64(
@@ -130,15 +122,7 @@ Reglas de salida:
     profileUrl: string,
     note?: string,
   ) {
-    const canRunCode = await this.hasTool(sessionId, 'browser_run_code');
-
-    if (!canRunCode) {
-      return {
-        ok: false,
-        error:
-          'Tu servidor MCP no expone browser_run_code. Actualizá @playwright/mcp y el SDK.',
-      };
-    }
+    // Direct Playwright execution
 
     // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
     const code = `
@@ -234,11 +218,7 @@ async (page) => {
 `;
 
     try {
-      const result: any = await this.mcp.callTool(
-        sessionId,
-        'browser_run_code',
-        { code },
-      );
+      const result = await this.playwright.runCode(code, sessionId);
 
       this.logger.debug(
         'browser_run_code result (sendConnection popover): ' +

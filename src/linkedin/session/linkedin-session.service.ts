@@ -1,7 +1,7 @@
 // src/linkedin/session/linkedin-session.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PlaywrightMcpService } from '../../mcp/playwright-mcp.service';
+import { PlaywrightService } from '../../browser/playwright.service';
 import { StreamService } from '../../stream/stream.service';
 
 export interface LinkedinSessionCheck {
@@ -24,7 +24,7 @@ export class LinkedinSessionService {
 
   constructor(
     private readonly config: ConfigService,
-    private readonly mcp: PlaywrightMcpService,
+    private readonly playwright: PlaywrightService,
     private readonly stream: StreamService,
   ) {}
 
@@ -181,9 +181,7 @@ No incluyas texto fuera del JSON.
     // ✅ Opcional: pre-navigate por sesión
     if (this.preNavigateEnabled()) {
       try {
-        await this.mcp.callTool(sessionId, 'browser_navigate', {
-          url: this.getPreNavigateUrl(),
-        });
+        await this.playwright.navigate(this.getPreNavigateUrl(), sessionId);
         await new Promise((r) => setTimeout(r, 800));
       } catch (e: any) {
         this.logger.warn(

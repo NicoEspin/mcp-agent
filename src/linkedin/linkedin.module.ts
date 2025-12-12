@@ -4,7 +4,7 @@ import { LinkedinController } from './linkedin.controller';
 import { LinkedinService } from './linkedin.service';
 
 // import { LinkedinAgentController } from './linkedin-agent.controller';
-import { PlaywrightMcpModule } from '../mcp/playwright-mcp.module';
+import { BrowserModule } from '../browser/browser.module';
 import { LinkedinSessionService } from './session/linkedin-session.service';
 import { LinkedinSessionGuard } from './session/linkedin-session.guard';
 import { StreamModule } from '../stream/stream.module';
@@ -12,7 +12,7 @@ import { LinkedinChatService } from './services/linkedin-chat.service';
 import { LinkedinConnectionService } from './services/linkedin-connection.service';
 
 @Module({
-  imports: [PlaywrightMcpModule, StreamModule],
+  imports: [BrowserModule, StreamModule],
   controllers: [LinkedinController],
   providers: [
     LinkedinService, // fachada
