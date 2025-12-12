@@ -240,7 +240,8 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   private async initBrowser() {
     const browserType =
       this.config.get<string>('PLAYWRIGHT_BROWSER') ?? 'chrome';
-    const headless = this.config.get<string>('PLAYWRIGHT_HEADLESS') !== 'false';
+    // Always run with a visible browser for transparency
+    const headless = false;
 
     const launchOptions = {
       headless,
@@ -491,28 +492,19 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   }
 
   private getContextFingerprint() {
+    // Hardcoded realistic desktop Chrome fingerprint (Buenos Aires)
     const userAgent =
-      this.config.get<string>('PLAYWRIGHT_USER_AGENT') ??
       'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
-    const locale = this.config.get<string>('PLAYWRIGHT_LOCALE') ?? 'es-AR';
-    const timezoneId =
-      this.config.get<string>('PLAYWRIGHT_TIMEZONE') ??
-      'America/Argentina/Buenos_Aires';
-
-    const lat = Number(
-      this.config.get<string>('PLAYWRIGHT_GEO_LAT') ?? '-34.6037',
-    );
-    const lon = Number(
-      this.config.get<string>('PLAYWRIGHT_GEO_LON') ?? '-58.3816',
-    );
-    const hasGeo = Number.isFinite(lat) && Number.isFinite(lon);
+    const locale = 'es-AR';
+    const timezoneId = 'America/Argentina/Buenos_Aires';
+    const geolocation = { latitude: -34.6037, longitude: -58.3816 };
 
     return {
       userAgent,
       locale,
       timezoneId,
-      geolocation: hasGeo ? { latitude: lat, longitude: lon } : undefined,
-      permissions: hasGeo ? ['geolocation'] : undefined,
+      geolocation,
+      permissions: ['geolocation'],
     };
   }
 
