@@ -252,7 +252,7 @@
 
             <!-- LINKEDIN CARD -->
             <div class="card">
-                <div class="title">Probar api/zion/linkedin/*</div>
+                <div class="title">Probar api/v1/linkedin/*</div>
                 <div class="muted">
                     Estos endpoints usan tu flujo real del servicio. El backend debe
                     tener acceso a <code>OPENAI_API_KEY</code> en el
@@ -333,7 +333,7 @@
             // path ejemplo: "send-message", "read-chat"
             const base = getBaseUrl();
             const prefix = isAgentMode()
-                ? "/api/zion/linkedin/agent"
+                ? "/api/zion/agent"
                 : "/api/zion/linkedin";
             return `${base}${prefix}/${path}`;
         }
@@ -378,7 +378,7 @@
             try {
                 await ensureSocketIoScript(baseUrl);
 
-                socket = window.io(`${baseUrl}/stream`, {
+                socket = window.io(`${baseUrl}/api/zion/stream`, {
                     query: { fps, sessionId: getSessionId() },
                     transports: ["websocket", "polling"],
                 });
@@ -555,7 +555,7 @@
 
                 try {
                     const res = await fetch(
-                        `${baseUrl}/api/zion/linkedin/check-connection`,
+                        `${baseUrl}/api/zion/check-connection`,
                         {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },

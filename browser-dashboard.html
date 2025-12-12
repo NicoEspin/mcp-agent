@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="es">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -24,7 +25,7 @@
             color: white;
             padding: 20px;
             text-align: center;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
         }
 
         .header h1 {
@@ -38,7 +39,7 @@
             background: white;
             margin: 20px;
             border-radius: 10px;
-            box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
         }
 
         .controls h2 {
@@ -60,7 +61,9 @@
             min-width: 120px;
         }
 
-        input, select, textarea {
+        input,
+        select,
+        textarea {
             padding: 8px 12px;
             border: 2px solid #e1e5e9;
             border-radius: 6px;
@@ -70,7 +73,9 @@
             max-width: 300px;
         }
 
-        input:focus, select:focus, textarea:focus {
+        input:focus,
+        select:focus,
+        textarea:focus {
             outline: none;
             border-color: #667eea;
             box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
@@ -127,7 +132,7 @@
         .session-card {
             background: white;
             border-radius: 12px;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.08);
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.08);
             overflow: hidden;
             transition: transform 0.3s ease;
         }
@@ -241,7 +246,8 @@
             border-radius: 8px;
         }
 
-        .task-form input, .task-form textarea {
+        .task-form input,
+        .task-form textarea {
             width: 100%;
             margin-bottom: 10px;
         }
@@ -295,7 +301,7 @@
             left: 0;
             width: 100%;
             height: 100%;
-            background: rgba(0,0,0,0.5);
+            background: rgba(0, 0, 0, 0.5);
             z-index: 1000;
             align-items: center;
             justify-content: center;
@@ -311,7 +317,7 @@
             padding: 30px;
             max-width: 500px;
             width: 90%;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.3);
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.3);
         }
 
         .modal-header {
@@ -344,7 +350,7 @@
             position: absolute;
             top: 10px;
             right: 10px;
-            background: rgba(0,0,0,0.8);
+            background: rgba(0, 0, 0, 0.8);
             color: white;
             padding: 4px 8px;
             border-radius: 4px;
@@ -357,22 +363,23 @@
                 grid-template-columns: 1fr;
                 padding: 0 10px 20px;
             }
-            
+
             .controls {
                 margin: 10px;
             }
-            
+
             .control-group {
                 flex-direction: column;
                 align-items: stretch;
             }
-            
+
             .control-group label {
                 min-width: auto;
             }
         }
     </style>
 </head>
+
 <body>
     <div class="header">
         <h1>🚀 Browser Session Dashboard</h1>
@@ -386,7 +393,7 @@
             <input type="text" id="baseUrl" value="http://localhost:3001" placeholder="http://localhost:3001">
             <button class="btn-primary" onclick="updateConnection()">Connect</button>
         </div>
-        
+
         <div class="control-group">
             <label>New Session ID:</label>
             <input type="text" id="newSessionId" placeholder="session-name" maxlength="50">
@@ -419,24 +426,24 @@
         // Auto-detect base URL from current origin
         function detectBaseUrl() {
             const currentOrigin = window.location.origin;
-            
+
             // If running from file:// protocol, default to localhost
             if (currentOrigin === 'null' || currentOrigin.startsWith('file://')) {
                 return 'http://localhost:3001';
             }
-            
+
             // If running from a web server, detect the API port
             // Try common development ports or use same origin
             const commonPorts = ['3001', '3000', '8080', '4000'];
             const currentPort = window.location.port;
-            
+
             // If we're on a known dev port, try the API port
             if (currentPort && commonPorts.includes(currentPort)) {
                 // If on 3000, try 3001; if on other ports, try 3001 first
                 const apiPort = currentPort === '3000' ? '3001' : '3001';
                 return `${window.location.protocol}//${window.location.hostname}:${apiPort}`;
             }
-            
+
             // Otherwise use current origin (same server)
             return currentOrigin;
         }
@@ -454,7 +461,7 @@
             baseUrl = document.getElementById('baseUrl').value.trim().replace(/\/$/, '');
             document.getElementById('connectionStatus').textContent = 'Connecting...';
             document.getElementById('connectionStatus').className = 'connection-indicator disconnected';
-            
+
             // Test connection
             fetch(`${baseUrl}/api/zion/linkedin/session-state`)
                 .then(res => res.ok ? 'connected' : 'error')
@@ -525,8 +532,8 @@
             card.className = 'session-card';
             card.id = `session-${sessionId}`;
 
-            const statusClass = sessionData.status === 'active' ? 'status-active' : 
-                               sessionData.status === 'inactive' ? 'status-inactive' : 'status-unknown';
+            const statusClass = sessionData.status === 'active' ? 'status-active' :
+                sessionData.status === 'inactive' ? 'status-inactive' : 'status-unknown';
 
             card.innerHTML = `
                 <div class="session-header">
@@ -611,18 +618,18 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessionId })
             })
-            .then(res => res.json())
-            .then(data => {
-                addLog(sessionId, 'Browser opened successfully', 'info');
-                updateSessionStatus(sessionId, 'active');
-                
-                // Start streaming
-                startStreaming(sessionId);
-            })
-            .catch(err => {
-                addLog(sessionId, `Failed to start browser: ${err.message}`, 'error');
-                updateSessionStatus(sessionId, 'inactive');
-            });
+                .then(res => res.json())
+                .then(data => {
+                    addLog(sessionId, 'Browser opened successfully', 'info');
+                    updateSessionStatus(sessionId, 'active');
+
+                    // Start streaming
+                    startStreaming(sessionId);
+                })
+                .catch(err => {
+                    addLog(sessionId, `Failed to start browser: ${err.message}`, 'error');
+                    updateSessionStatus(sessionId, 'inactive');
+                });
         }
 
         function startStreaming(sessionId) {
@@ -636,11 +643,11 @@
 
             // Create new socket connection for this session
             const socket = io(`${baseUrl}/api/zion/stream`, {
-                query: { 
-                    sessionId: sessionId,
-                    fps: 2 
-                }
+                path: "/api/zion/socket.io",   // ✅ clave
+                query: { sessionId, fps: 2 },
+                transports: ["websocket", "polling"],
             });
+
 
             sessionData.socket = socket;
 
@@ -655,7 +662,7 @@
             socket.on('frame', (data) => {
                 frameCount++;
                 const now = Date.now();
-                
+
                 // Update FPS every second
                 if (now - lastFpsUpdate >= 1000) {
                     const fps = Math.round(frameCount * 1000 / (now - lastFpsUpdate));
@@ -698,31 +705,31 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessionId })
             })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    addLog(sessionId, 'Session stopped successfully', 'info');
-                    updateSessionStatus(sessionId, 'inactive');
-                    
-                    // Disconnect streaming
-                    const sessionData = sessions.get(sessionId);
-                    if (sessionData && sessionData.socket) {
-                        sessionData.socket.disconnect();
-                        sessionData.socket = null;
-                    }
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        addLog(sessionId, 'Session stopped successfully', 'info');
+                        updateSessionStatus(sessionId, 'inactive');
 
-                    // Clear screen
-                    const screenContainer = document.getElementById(`screen-${sessionId}`);
-                    if (screenContainer) {
-                        screenContainer.innerHTML = '<div class="screen-placeholder">Session stopped</div>';
+                        // Disconnect streaming
+                        const sessionData = sessions.get(sessionId);
+                        if (sessionData && sessionData.socket) {
+                            sessionData.socket.disconnect();
+                            sessionData.socket = null;
+                        }
+
+                        // Clear screen
+                        const screenContainer = document.getElementById(`screen-${sessionId}`);
+                        if (screenContainer) {
+                            screenContainer.innerHTML = '<div class="screen-placeholder">Session stopped</div>';
+                        }
+                    } else {
+                        addLog(sessionId, `Failed to stop session: ${data.message}`, 'error');
                     }
-                } else {
-                    addLog(sessionId, `Failed to stop session: ${data.message}`, 'error');
-                }
-            })
-            .catch(err => {
-                addLog(sessionId, `Failed to stop session: ${err.message}`, 'error');
-            });
+                })
+                .catch(err => {
+                    addLog(sessionId, `Failed to stop session: ${err.message}`, 'error');
+                });
         }
 
         function deleteSession(sessionId) {
@@ -732,10 +739,10 @@
 
             // First stop the session
             stopSession(sessionId);
-            
+
             // Remove from our local state
             sessions.delete(sessionId);
-            
+
             // Remove from UI
             const sessionCard = document.getElementById(`session-${sessionId}`);
             if (sessionCard) {
@@ -749,36 +756,35 @@
             addLog(sessionId, 'Checking session state...', 'info');
 
             fetch(`${baseUrl}/api/zion/linkedin/session-state?sessionId=${sessionId}`)
-            .then(res => res.json())
-            .then(data => {
-                const status = data.isLoggedIn ? 'logged in' : 'not logged in';
-                const confidence = data.confidence ? ` (${Math.round(data.confidence * 100)}% confident)` : '';
-                addLog(sessionId, `Session state: ${status}${confidence}`, 'info');
-                
-                if (data.reason) {
-                    addLog(sessionId, `Reason: ${data.reason}`, 'info');
-                }
+                .then(res => res.json())
+                .then(data => {
+                    const status = data.isLoggedIn ? 'logged in' : 'not logged in';
+                    const confidence = data.confidence ? ` (${Math.round(data.confidence * 100)}% confident)` : '';
+                    addLog(sessionId, `Session state: ${status}${confidence}`, 'info');
 
-                updateSessionStatus(sessionId, data.isLoggedIn ? 'active' : 'inactive');
-            })
-            .catch(err => {
-                addLog(sessionId, `Failed to check session state: ${err.message}`, 'error');
-            });
+                    if (data.reason) {
+                        addLog(sessionId, `Reason: ${data.reason}`, 'info');
+                    }
+
+                    updateSessionStatus(sessionId, data.isLoggedIn ? 'active' : 'inactive');
+                })
+                .catch(err => {
+                    addLog(sessionId, `Failed to check session state: ${err.message}`, 'error');
+                });
         }
 
         function updateSessionStatus(sessionId, status) {
             const sessionData = sessions.get(sessionId);
             if (sessionData) {
                 sessionData.status = status;
-                
+
                 // Update UI
                 const statusElement = document.querySelector(`#session-${sessionId} .session-status`);
                 if (statusElement) {
                     statusElement.textContent = status.toUpperCase();
-                    statusElement.className = `session-status ${
-                        status === 'active' ? 'status-active' : 
-                        status === 'inactive' ? 'status-inactive' : 'status-unknown'
-                    }`;
+                    statusElement.className = `session-status ${status === 'active' ? 'status-active' :
+                            status === 'inactive' ? 'status-inactive' : 'status-unknown'
+                        }`;
                 }
             }
         }
@@ -797,14 +803,14 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessionId, profileUrl })
             })
-            .then(res => res.json())
-            .then(connected => {
-                const status = connected ? 'Connected' : 'Not connected';
-                addLog(sessionId, `Connection status: ${status}`, connected ? 'info' : 'warning');
-            })
-            .catch(err => {
-                addLog(sessionId, `Failed to check connection: ${err.message}`, 'error');
-            });
+                .then(res => res.json())
+                .then(connected => {
+                    const status = connected ? 'Connected' : 'Not connected';
+                    addLog(sessionId, `Connection status: ${status}`, connected ? 'info' : 'warning');
+                })
+                .catch(err => {
+                    addLog(sessionId, `Failed to check connection: ${err.message}`, 'error');
+                });
         }
 
         function openTaskModal(sessionId, taskType) {
@@ -892,18 +898,18 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             })
-            .then(res => res.json())
-            .then(data => {
-                addLog(currentModalSession, `${currentModalTask} completed successfully`, 'info');
-                if (data.result) {
-                    addLog(currentModalSession, `Result: ${JSON.stringify(data.result).substring(0, 100)}...`, 'info');
-                }
-                closeModal();
-            })
-            .catch(err => {
-                addLog(currentModalSession, `${currentModalTask} failed: ${err.message}`, 'error');
-                closeModal();
-            });
+                .then(res => res.json())
+                .then(data => {
+                    addLog(currentModalSession, `${currentModalTask} completed successfully`, 'info');
+                    if (data.result) {
+                        addLog(currentModalSession, `Result: ${JSON.stringify(data.result).substring(0, 100)}...`, 'info');
+                    }
+                    closeModal();
+                })
+                .catch(err => {
+                    addLog(currentModalSession, `${currentModalTask} failed: ${err.message}`, 'error');
+                    closeModal();
+                });
         }
 
         // Initialize with default session
@@ -916,4 +922,5 @@
         });
     </script>
 </body>
+
 </html>

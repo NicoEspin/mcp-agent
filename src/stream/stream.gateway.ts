@@ -13,6 +13,7 @@ type SessionId = string;
 
 @WebSocketGateway({
   namespace: '/api/zion/stream',
+  path: '/api/zion/socket.io',
   cors: {
     origin: [
       'http://localhost:5500',
