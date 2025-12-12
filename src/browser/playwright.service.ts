@@ -63,17 +63,9 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   private async initBrowser() {
     const browserType = this.config.get<string>('PLAYWRIGHT_BROWSER') ?? 'chrome';
     const headless = this.config.get<string>('PLAYWRIGHT_HEADLESS') !== 'false';
-    const userDataDir = this.config.get<string>('PLAYWRIGHT_USER_DATA_DIR') ?? 
-      path.resolve(process.cwd(), '.pw-profile');
-
-    // Ensure user data directory exists
-    if (!fs.existsSync(userDataDir)) {
-      fs.mkdirSync(userDataDir, { recursive: true });
-    }
 
     const launchOptions = {
       headless,
-      userDataDir,
       args: [
         '--no-sandbox',
         '--disable-setuid-sandbox', 
