@@ -37,6 +37,12 @@ export class StreamService {
         return screenshot;
       } catch (error) {
         this.logger.error(`Failed to take screenshot for session ${sessionId}:`, error);
+        
+        // If it's a session closed error, clean up the cached frame
+        if (error.message.includes('Target page, context or browser has been closed')) {
+          this.lastFrames.delete(sessionId);
+        }
+        
         throw new Error(`Screenshot failed for session ${sessionId}: ${error.message}`);
       }
     })();
