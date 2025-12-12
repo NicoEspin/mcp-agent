@@ -13,6 +13,38 @@
             box-sizing: border-box;
         }
 
+        .screen-overlay {
+            position: absolute;
+            inset: 0;
+            cursor: crosshair;
+            outline: none;
+            /* avoids browser gestures hijacking touch/trackpad */
+            touch-action: none;
+        }
+
+        .screen-viewer.focused {
+            border-color: #667eea;
+            box-shadow: 0 0 0 4px rgba(102, 126, 234, 0.15);
+        }
+
+        .screen-hint {
+            position: absolute;
+            left: 10px;
+            bottom: 10px;
+            background: rgba(0, 0, 0, 0.75);
+            color: #fff;
+            font-size: 11px;
+            padding: 6px 8px;
+            border-radius: 6px;
+            font-family: monospace;
+            display: none;
+        }
+
+        .screen-viewer:not(.focused) .screen-hint {
+            display: block;
+        }
+
+
         body {
             font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
             background: #f5f7fa;
@@ -212,6 +244,8 @@
             max-width: 100%;
             height: auto;
             display: block;
+            user-select: none;
+            -webkit-user-drag: none;
         }
 
         .screen-placeholder {
@@ -448,14 +482,13 @@
             return currentOrigin;
         }
 
-        let baseUrl = detectBaseUrl();
+        let baseUrl = '';
         let sessions = new Map(); // sessionId -> { socket, status, lastFrame, logs }
         let currentModalTask = null;
         let currentModalSession = null;
 
         // Initialize
-        document.getElementById('baseUrl').value = baseUrl;
-        updateConnection();
+
 
         function updateConnection() {
             baseUrl = document.getElementById('baseUrl').value.trim().replace(/\/$/, '');
@@ -478,7 +511,9 @@
                     }
                 });
         }
-
+        window.addEventListener('load', () => {
+            updateConnection();
+        });
         function createSession() {
             const sessionId = document.getElementById('newSessionId').value.trim();
             if (!sessionId) {
@@ -548,12 +583,23 @@
                     <button class="btn-danger" onclick="deleteSession('${sessionId}')">Delete</button>
                 </div>
 
-                <div class="screen-container">
-                    <div class="screen-viewer" id="screen-${sessionId}">
-                        <div class="screen-placeholder">Click "Start" to initialize session</div>
-                        <div class="fps-indicator" id="fps-${sessionId}" style="display: none;">0 FPS</div>
-                    </div>
-                </div>
+ <div class="screen-container">
+  <div class="screen-viewer" id="screen-${sessionId}">
+    <div class="screen-placeholder" id="placeholder-${sessionId}">
+      Click "Start" to initialize session
+    </div>
+
+    <div class="screen-stage" id="stage-${sessionId}" style="display:none;">
+      <img id="img-${sessionId}" alt="Browser Screen" draggable="false" />
+      <div class="screen-overlay" id="overlay-${sessionId}" tabindex="0"
+           title="Click to focus, then type. Scroll to scroll."></div>
+      <div class="screen-hint">Click to focus • then type • scroll to scroll</div>
+      <div class="fps-indicator" id="fps-${sessionId}" style="display:none;">0 FPS</div>
+    </div>
+  </div>
+</div>
+
+
 
                 <div class="linkedin-tasks">
                     <h3>🔗 LinkedIn Actions</h3>
@@ -625,6 +671,7 @@
 
                     // Start streaming
                     startStreaming(sessionId);
+                    setTimeout(() => setFocusedSession(sessionId), 250);
                 })
                 .catch(err => {
                     addLog(sessionId, `Failed to start browser: ${err.message}`, 'error');
@@ -650,6 +697,7 @@
 
 
             sessionData.socket = socket;
+            bindInteractiveOverlay(sessionId);
 
             let frameCount = 0;
             let lastFpsUpdate = Date.now();
@@ -672,17 +720,22 @@
                 }
 
                 // Update screen
-                const screenContainer = document.getElementById(`screen-${sessionId}`);
-                if (screenContainer) {
-                    screenContainer.innerHTML = `
-                        <img src="data:${data.mimeType};base64,${data.data}" alt="Browser Screen">
-                        <div class="fps-indicator" id="fps-${sessionId}">${document.getElementById(`fps-${sessionId}`) ? document.getElementById(`fps-${sessionId}`).textContent : '0 FPS'}</div>
-                    `;
+                const img = document.getElementById(`img-${sessionId}`);
+                const stage = document.getElementById(`stage-${sessionId}`);  // ✅ Get the stage div
+                const placeholder = document.getElementById(`placeholder-${sessionId}`);
+
+                if (img && stage) {
+                    img.src = `data:${data.mimeType};base64,${data.data}`;
+
+                    // First frame => show stage, hide placeholder
+                    if (stage.style.display === 'none' || !stage.style.display) {  // ✅ Check the stage, not img
+                        stage.style.display = 'block';  // ✅ Show the stage container
+                        if (placeholder) placeholder.style.display = 'none';
+                    }
                 }
 
                 sessionData.lastFrame = data;
             });
-
             socket.on('frame_error', (error) => {
                 addLog(sessionId, `Stream error: ${error.message}`, 'error');
                 const screenContainer = document.getElementById(`screen-${sessionId}`);
@@ -783,7 +836,7 @@
                 if (statusElement) {
                     statusElement.textContent = status.toUpperCase();
                     statusElement.className = `session-status ${status === 'active' ? 'status-active' :
-                            status === 'inactive' ? 'status-inactive' : 'status-unknown'
+                        status === 'inactive' ? 'status-inactive' : 'status-unknown'
                         }`;
                 }
             }
@@ -910,6 +963,226 @@
                     addLog(currentModalSession, `${currentModalTask} failed: ${err.message}`, 'error');
                     closeModal();
                 });
+        }
+        function normalizeKey(k) {
+            // Playwright-friendly names
+            if (k === ' ') return 'Space';
+            if (k === 'Esc') return 'Escape';
+            return k;
+        }
+
+        function modifiersFromEvent(e) {
+            const mods = [];
+            if (e.altKey) mods.push('Alt');
+            if (e.ctrlKey) mods.push('Control');
+            if (e.metaKey) mods.push('Meta');
+            if (e.shiftKey) mods.push('Shift');
+            return mods;
+        }
+
+        function toRemoteXY(sessionId, clientX, clientY) {
+            const overlay = document.getElementById(`overlay-${sessionId}`);
+            const img = document.getElementById(`img-${sessionId}`);
+            if (!overlay || !img) return { x: 0, y: 0 };
+
+            const r = overlay.getBoundingClientRect();
+            const rx = (clientX - r.left) / r.width;
+            const ry = (clientY - r.top) / r.height;
+
+            const w = img.naturalWidth || r.width;
+            const h = img.naturalHeight || r.height;
+
+            const x = Math.max(0, Math.min(w - 1, Math.round(rx * w)));
+            const y = Math.max(0, Math.min(h - 1, Math.round(ry * h)));
+            return { x, y };
+        }
+
+        function setFocusedSession(sessionId) {
+            // remove focus class from all
+            sessions.forEach((_, sid) => {
+                const screen = document.getElementById(`screen-${sid}`);
+                if (screen) screen.classList.remove('focused');
+            });
+
+            const screen = document.getElementById(`screen-${sessionId}`);
+            if (screen) screen.classList.add('focused');
+
+            const overlay = document.getElementById(`overlay-${sessionId}`);
+            if (overlay) overlay.focus();
+        }
+
+        function emitInput(sessionId, payload) {
+            const s = sessions.get(sessionId);
+            if (!s?.socket || !s.socket.connected) return;
+            s.socket.emit('input', payload);
+        }
+
+        function bindInteractiveOverlay(sessionId) {
+            const overlay = document.getElementById(`overlay-${sessionId}`);
+            if (!overlay) return;
+
+            // avoid double-binding
+            if (overlay.dataset.bound === '1') return;
+            overlay.dataset.bound = '1';
+
+            let pointerDown = null; // { id, startX, startY, startT, button }
+            let dragging = false;
+            let sentDown = false;
+
+            let lastMoveAt = 0;
+
+            let lastClickAt = 0;
+            let lastClickX = 0;
+            let lastClickY = 0;
+
+            function sendMove(x, y) {
+                const now = Date.now();
+                if (now - lastMoveAt < 25) return; // throttle
+                lastMoveAt = now;
+                emitInput(sessionId, { type: 'move', x, y });
+            }
+
+            overlay.addEventListener('pointerdown', (e) => {
+                setFocusedSession(sessionId);
+
+                overlay.setPointerCapture(e.pointerId);
+
+                const { x, y } = toRemoteXY(sessionId, e.clientX, e.clientY);
+                pointerDown = {
+                    id: e.pointerId,
+                    startX: x,
+                    startY: y,
+                    startT: Date.now(),
+                    button: e.button, // 0 left, 1 middle, 2 right
+                };
+                dragging = false;
+                sentDown = false;
+
+                // Prevent selecting/dragging
+                e.preventDefault();
+            });
+
+            overlay.addEventListener('pointermove', (e) => {
+                const { x, y } = toRemoteXY(sessionId, e.clientX, e.clientY);
+
+                // hover move (important for menus / hover states)
+                if (!pointerDown) {
+                    sendMove(x, y);
+                    return;
+                }
+
+                // if pointer down, decide drag vs click
+                const dx = x - pointerDown.startX;
+                const dy = y - pointerDown.startY;
+                const dist = Math.hypot(dx, dy);
+
+                if (!dragging && dist > 3) {
+                    dragging = true;
+                }
+
+                if (dragging) {
+                    if (!sentDown) {
+                        sentDown = true;
+                        emitInput(sessionId, {
+                            type: 'down',
+                            x: pointerDown.startX,
+                            y: pointerDown.startY,
+                            button: pointerDown.button === 2 ? 'right' : pointerDown.button === 1 ? 'middle' : 'left',
+                            modifiers: modifiersFromEvent(e),
+                        });
+                    }
+                    sendMove(x, y);
+                } else {
+                    // tiny movement: still allow hover
+                    sendMove(x, y);
+                }
+
+                e.preventDefault();
+            });
+
+            overlay.addEventListener('pointerup', (e) => {
+                const { x, y } = toRemoteXY(sessionId, e.clientX, e.clientY);
+
+                if (!pointerDown) return;
+
+                if (dragging) {
+                    emitInput(sessionId, {
+                        type: 'up',
+                        x,
+                        y,
+                        button: pointerDown.button === 2 ? 'right' : pointerDown.button === 1 ? 'middle' : 'left',
+                        modifiers: modifiersFromEvent(e),
+                    });
+                } else {
+                    // click / double click
+                    const now = Date.now();
+                    const near =
+                        Math.hypot(x - lastClickX, y - lastClickY) < 6 &&
+                        (now - lastClickAt) < 320;
+
+                    const clickCount = near ? 2 : 1;
+
+                    if (clickCount === 2) {
+                        lastClickAt = 0;
+                    } else {
+                        lastClickAt = now;
+                        lastClickX = x;
+                        lastClickY = y;
+                    }
+
+                    emitInput(sessionId, {
+                        type: 'click',
+                        x,
+                        y,
+                        button: pointerDown.button === 2 ? 'right' : pointerDown.button === 1 ? 'middle' : 'left',
+                        clickCount,
+                        modifiers: modifiersFromEvent(e),
+                    });
+                }
+
+                pointerDown = null;
+                dragging = false;
+                sentDown = false;
+
+                e.preventDefault();
+            });
+
+            overlay.addEventListener('contextmenu', (e) => {
+                // prevent browser menu
+                e.preventDefault();
+            });
+
+            overlay.addEventListener('wheel', (e) => {
+                setFocusedSession(sessionId);
+                e.preventDefault();
+                emitInput(sessionId, { type: 'wheel', dx: e.deltaX, dy: e.deltaY });
+            }, { passive: false });
+
+            // Keyboard goes to the focused overlay (no global key handler needed)
+            overlay.addEventListener('keydown', (e) => {
+                // Don’t hijack typing in your modal/inputs elsewhere
+                const tag = (document.activeElement?.tagName || '').toLowerCase();
+                if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+                const mods = modifiersFromEvent(e);
+
+                if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+                    emitInput(sessionId, { type: 'type', text: e.key });
+                    e.preventDefault();
+                    return;
+                }
+
+                emitInput(sessionId, { type: 'press', key: normalizeKey(e.key), modifiers: mods });
+                e.preventDefault();
+            });
+
+            overlay.addEventListener('paste', (e) => {
+                const text = e.clipboardData?.getData('text') || '';
+                if (text) {
+                    emitInput(sessionId, { type: 'type', text });
+                    e.preventDefault();
+                }
+            });
         }
 
         // Initialize with default session

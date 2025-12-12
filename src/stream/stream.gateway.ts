@@ -1,4 +1,3 @@
-// src/stream/stream.gateway.ts
 import {
   WebSocketGateway,
   WebSocketServer,
@@ -8,8 +7,7 @@ import {
 import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { StreamService } from './stream.service';
-
-type SessionId = string;
+import type { InputEvent, SessionId } from './stream.types';
 
 @WebSocketGateway({
   namespace: '/api/zion/stream',
@@ -31,40 +29,46 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
   server!: Server;
 
   private timers = new Map<string, NodeJS.Timeout>();
+  private clientSession = new Map<string, SessionId>();
 
   constructor(private readonly streamService: StreamService) {}
 
   handleConnection(client: Socket) {
-    // fps por querystring: io(".../stream", { query: { fps: "2" } })
     const rawFps = client.handshake.query?.fps;
     const fpsNum = Array.isArray(rawFps) ? rawFps[0] : rawFps;
     const fps = Math.max(1, Math.min(10, Number(fpsNum ?? 2)));
-
     const intervalMs = Math.max(200, Math.floor(1000 / fps));
 
-    // sessionId por querystring: io(".../stream", { query: { sessionId: "recruiter-1" } })
     const rawSession = client.handshake.query?.sessionId;
     const sessionIdRaw = Array.isArray(rawSession) ? rawSession[0] : rawSession;
     const sessionId: SessionId =
       (sessionIdRaw && String(sessionIdRaw)) || 'default';
 
+    this.clientSession.set(client.id, sessionId);
+
     this.logger.log(
       `Client connected ${client.id} (fps=${fps}, sessionId=${sessionId})`,
     );
 
-    // Primer frame en caliente
+    // ✅ INPUT: the key feature
+    client.on('input', async (ev: InputEvent, ack?: (res: any) => void) => {
+      const sid = this.clientSession.get(client.id) ?? 'default';
+      try {
+        await this.streamService.dispatchInput(sid, ev);
+        ack?.({ ok: true });
+      } catch (err: any) {
+        ack?.({ ok: false, message: err?.message ?? 'input failed' });
+      }
+    });
+
+    // warm first frame
     this.streamService.getScreenshotBase64(sessionId).catch(() => {});
 
     const timer = setInterval(async () => {
       try {
         const { data, mimeType } =
           await this.streamService.getScreenshotBase64(sessionId);
-
-        client.emit('frame', {
-          data,
-          mimeType,
-          ts: Date.now(),
-        });
+        client.emit('frame', { data, mimeType, ts: Date.now() });
       } catch (err: any) {
         client.emit('frame_error', {
           message: err?.message ?? 'Unknown streaming error',
@@ -79,7 +83,7 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
     const timer = this.timers.get(client.id);
     if (timer) clearInterval(timer);
     this.timers.delete(client.id);
-
+    this.clientSession.delete(client.id);
     this.logger.log(`Client disconnected ${client.id}`);
   }
 }
