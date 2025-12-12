@@ -1,0 +1,47 @@
+[Unit]
+Description=MCP Agent NestJS Application
+Documentation=https://nestjs.com/
+After=network.target playwright-mcp.service
+Wants=network.target
+Requires=playwright-mcp.service
+
+[Service]
+Type=simple
+User=mauri
+Group=mauri
+WorkingDirectory=/home/mauri/mcp-agent
+ExecStart=/usr/local/bin/npm run start
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=mcp-agent
+
+# Environment
+Environment=NODE_ENV=production
+Environment=PATH=/usr/local/bin:/usr/bin:/bin
+Environment=HOME=/home/mauri
+Environment=PORT=3001
+Environment=PLAYWRIGHT_MCP_MANAGED=false
+Environment=PLAYWRIGHT_MCP_AUTO_CONNECT=true
+Environment=PLAYWRIGHT_MCP_HOST=127.0.0.1
+Environment=PLAYWRIGHT_MCP_PORT=8931
+
+# Security
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/home/mauri/mcp-agent
+ProtectHome=read-only
+
+# Resource limits
+LimitNOFILE=65536
+MemoryHigh=1G
+MemoryMax=2G
+
+# Health check - restart if port 3001 is not responding
+ExecStartPost=/bin/bash -c 'sleep 10 && curl -f http://localhost:3001/api/zion/linkedin/session-state || exit 1'
+
+[Install]
+WantedBy=multi-user.target
