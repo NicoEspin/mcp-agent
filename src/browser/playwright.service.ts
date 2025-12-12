@@ -33,11 +33,20 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   constructor(private readonly config: ConfigService) {}
 
   async onModuleInit() {
-    await this.initBrowser();
-    
-    const autoWarmup = this.config.get<string>('PLAYWRIGHT_AUTO_WARMUP') !== 'false';
-    if (autoWarmup) {
-      await this.warmupBrowser();
+    try {
+      await this.initBrowser();
+      
+      const autoWarmup = this.config.get<string>('PLAYWRIGHT_AUTO_WARMUP') !== 'false';
+      if (autoWarmup) {
+        await this.warmupBrowser();
+      }
+    } catch (error) {
+      this.logger.error('Failed to initialize Playwright browser:', error.message);
+      if (error.message.includes('Executable doesn\'t exist')) {
+        this.logger.error('Browser binaries not found. Please run: npx playwright install');
+      }
+      // Don't throw - allow service to start without browser for now
+      this.logger.warn('Service starting without browser initialization. Browser will be initialized on first use.');
     }
   }
 
@@ -105,7 +114,14 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
   private async ensureBrowser() {
     if (!this.browser) {
-      await this.initBrowser();
+      try {
+        await this.initBrowser();
+      } catch (error) {
+        if (error.message.includes('Executable doesn\'t exist')) {
+          throw new Error('Browser binaries not found. Please run: npx playwright install');
+        }
+        throw error;
+      }
     }
   }
 
