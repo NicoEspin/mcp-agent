@@ -139,7 +139,7 @@ async (page) => {
   // 1) Ir al perfil
   await debug('Ir al perfil');
   await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(10000);
   await debug('Perfil cargado');
 
   // 2) Localizar <main> (si hay más de uno, usamos el último)
