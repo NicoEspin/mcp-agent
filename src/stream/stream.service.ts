@@ -77,10 +77,37 @@ export class StreamService {
         this.invalidatedAt.delete(sessionId); // Clear invalidation flag
         return screenshot;
       } catch (error: any) {
-        // ✅ If screenshot fails, return last known good frame if available
+        const errorMessage = error.message || String(error);
+        
+        // Check if this is a browser closure error
+        if (this.isBrowserClosureError(errorMessage)) {
+          this.logger.warn(`Browser closure detected for ${sessionId}, attempting recovery: ${errorMessage}`);
+          
+          // Try one more time after browser recovery
+          try {
+            // Force browser recovery by calling takeScreenshot again
+            // The PlaywrightService will handle session recovery automatically
+            const screenshot = await this.playwright.takeScreenshot({ type: 'jpeg', fullPage: false }, sessionId);
+            this.lastFrames.set(sessionId, { ...screenshot, ts: Date.now() });
+            this.invalidatedAt.delete(sessionId);
+            this.logger.log(`Browser recovery successful for ${sessionId}`);
+            return screenshot;
+          } catch (retryError: any) {
+            this.logger.error(`Browser recovery failed for ${sessionId}: ${retryError.message}`);
+            // Fall back to cached frame only after recovery attempt fails
+            const last = this.lastFrames.get(sessionId);
+            if (last) {
+              this.logger.warn(`Using cached frame after recovery failure for ${sessionId}`);
+              return { data: last.data, mimeType: last.mimeType };
+            }
+            throw retryError;
+          }
+        }
+        
+        // For other errors, fall back to cached frame if available
         const last = this.lastFrames.get(sessionId);
         if (last) {
-          this.logger.warn(`Screenshot failed for ${sessionId}, using cached frame: ${error.message}`);
+          this.logger.warn(`Screenshot failed for ${sessionId}, using cached frame: ${errorMessage}`);
           return { data: last.data, mimeType: last.mimeType };
         }
         throw error;
@@ -93,6 +120,21 @@ export class StreamService {
     } finally {
       this.inFlight.delete(sessionId);
     }
+  }
+
+  private isBrowserClosureError(errorMessage: string): boolean {
+    const closurePatterns = [
+      'target page, context or browser has been closed',
+      'browser has been closed',
+      'context has been closed',
+      'page has been closed',
+      'target closed',
+      'session not found',
+      'protocol error',
+    ];
+    
+    const lowerMessage = errorMessage.toLowerCase();
+    return closurePatterns.some(pattern => lowerMessage.includes(pattern));
   }
 
   async getCachedScreenshotBase64(sessionId: SessionId = 'default', maxAgeMs = 800): Promise<ScreenshotResult> {

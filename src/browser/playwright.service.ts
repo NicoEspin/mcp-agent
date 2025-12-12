@@ -40,6 +40,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   private browser: Browser | null = null;
   private sessions = new Map<SessionId, BrowserSession>();
   private readonly DEFAULT_SESSION_ID = 'default';
+  private keepaliveTimer: NodeJS.Timeout | null = null;
 
   constructor(private readonly config: ConfigService) {}
 
@@ -190,6 +191,9 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       if (autoWarmup) {
         await this.warmupBrowser();
       }
+
+      // Start keepalive mechanism
+      this.startKeepalive();
     } catch (error: any) {
       this.logger.error(
         'Failed to initialize Playwright browser:',
@@ -208,6 +212,9 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   }
 
   async onModuleDestroy() {
+    // Stop keepalive
+    this.stopKeepalive();
+
     // Close all sessions
     for (const [sessionId, session] of this.sessions.entries()) {
       try {
@@ -274,10 +281,105 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     }
   }
 
+  private async isBrowserAlive(): Promise<boolean> {
+    if (!this.browser) return false;
+    try {
+      await this.browser.version();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isContextAlive(context: BrowserContext): Promise<boolean> {
+    try {
+      await context.pages();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async isPageAlive(page: Page): Promise<boolean> {
+    try {
+      await page.url();
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private startKeepalive() {
+    this.stopKeepalive(); // Clear any existing timer
+    
+    const keepaliveInterval = Number(
+      this.config.get('PLAYWRIGHT_KEEPALIVE_INTERVAL') ?? 30000 // 30 seconds default
+    );
+
+    this.keepaliveTimer = setInterval(async () => {
+      try {
+        await this.performKeepalive();
+      } catch (error) {
+        this.logger.warn(`Keepalive failed: ${error}`);
+      }
+    }, keepaliveInterval);
+
+    this.logger.log(`Browser keepalive started (interval: ${keepaliveInterval}ms)`);
+  }
+
+  private stopKeepalive() {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+      this.logger.log('Browser keepalive stopped');
+    }
+  }
+
+  private async performKeepalive() {
+    // Check if browser is alive and reinitialize if needed
+    await this.ensureBrowser();
+
+    // Clean up any broken sessions
+    const brokenSessions: SessionId[] = [];
+    for (const [sessionId, session] of this.sessions.entries()) {
+      const contextAlive = await this.isContextAlive(session.context);
+      const pageAlive = contextAlive ? await this.isPageAlive(session.page) : false;
+      
+      if (!contextAlive || !pageAlive) {
+        brokenSessions.push(sessionId);
+      }
+    }
+
+    // Remove broken sessions
+    for (const sessionId of brokenSessions) {
+      this.logger.debug(`Removing broken session during keepalive: ${sessionId}`);
+      this.sessions.delete(sessionId);
+    }
+
+    if (brokenSessions.length > 0) {
+      this.logger.warn(`Cleaned up ${brokenSessions.length} broken sessions during keepalive`);
+    }
+  }
+
   private async ensureBrowser() {
-    if (!this.browser) {
+    const isAlive = await this.isBrowserAlive();
+    if (!this.browser || !isAlive) {
+      if (this.browser && !isAlive) {
+        this.logger.warn('Browser detected as closed, reinitializing...');
+        try {
+          await this.browser.close();
+        } catch (e) {
+          // Browser might already be closed
+        }
+        this.browser = null;
+        
+        // Clear all sessions since browser context will be invalid
+        this.sessions.clear();
+      }
+
       try {
         await this.initBrowser();
+        this.logger.log('Browser reinitialized successfully');
       } catch (error: any) {
         if ((error?.message ?? '').includes("Executable doesn't exist")) {
           throw new Error(
@@ -295,6 +397,28 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     await this.ensureBrowser();
 
     let session = this.sessions.get(sessionId);
+
+    // Check if existing session is still valid
+    if (session) {
+      const contextAlive = await this.isContextAlive(session.context);
+      const pageAlive = contextAlive ? await this.isPageAlive(session.page) : false;
+      
+      if (!contextAlive || !pageAlive) {
+        this.logger.warn(`Session ${sessionId} detected as closed, recreating...`);
+        
+        // Clean up the broken session
+        try {
+          if (pageAlive) await session.page.close();
+          if (contextAlive) await session.context.close();
+        } catch (e) {
+          // Ignore cleanup errors
+        }
+        
+        // Remove the broken session
+        this.sessions.delete(sessionId);
+        session = undefined;
+      }
+    }
 
     if (!session) {
       // Create new browser context for this session
