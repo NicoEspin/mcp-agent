@@ -240,8 +240,14 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   private async initBrowser() {
     const browserType =
       this.config.get<string>('PLAYWRIGHT_BROWSER') ?? 'chrome';
-    // Always run with a visible browser for transparency
-    const headless = false;
+    // Prefer headed for visibility, but fall back to headless if no display to avoid crashes
+    const hasDisplay = !!process.env.DISPLAY;
+    const headless = hasDisplay ? false : true;
+    if (!hasDisplay) {
+      this.logger.warn(
+        'DISPLAY is not set; falling back to headless to avoid X11 launch failure. Run with a DISPLAY/Xvfb to view the browser.',
+      );
+    }
 
     const launchOptions = {
       headless,
