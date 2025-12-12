@@ -55,9 +55,7 @@ export class LinkedinController {
   // check-connection (POST)
   // -------------------
   @Post('check-connection')
-  async checkConnection(
-    @Body() dto: CheckConnectionDto,
-  ): Promise<boolean> {
+  async checkConnection(@Body() dto: CheckConnectionDto): Promise<boolean> {
     const sessionId = dto.sessionId ?? 'default';
 
     return this.linkedin.checkConnection(sessionId, dto.profileUrl);
@@ -101,5 +99,62 @@ export class LinkedinController {
   ) {
     const sessionId = body?.sessionId ?? 'default';
     return this.playwright.stopSession(sessionId);
+  }
+
+  // -------------------
+  // sessions (GET)
+  // -------------------
+  @Get('sessions')
+  async listSessions() {
+    return this.playwright.listSessions();
+  }
+
+  // -------------------
+  // launch-session (POST)
+  // -------------------
+  @Post('launch-session')
+  async launchSession(
+    @Body()
+    body: {
+      sessionId: string;
+      url?: string;
+    },
+  ) {
+    const url = body.url ?? 'https://www.linkedin.com/';
+    await this.playwright.navigate(url, body.sessionId);
+    return {
+      success: true,
+      url,
+      sessionId: body.sessionId,
+    };
+  }
+
+  // -------------------
+  // click (POST)
+  // -------------------
+  @Post('click')
+  async click(
+    @Body()
+    body: {
+      sessionId: string;
+      x: number;
+      y: number;
+    },
+  ) {
+    const code = `
+      const rect = document.querySelector('body').getBoundingClientRect();
+      const x = ${body.x};
+      const y = ${body.y};
+      const element = document.elementFromPoint(x, y);
+      if (element) {
+        element.click();
+        return { success: true, element: element.tagName, x, y };
+      } else {
+        return { success: false, message: 'No element found at coordinates', x, y };
+      }
+    `;
+
+    const result = await this.playwright.runCode(code, body.sessionId);
+    return result;
   }
 }

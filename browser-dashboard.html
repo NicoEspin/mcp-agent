@@ -507,9 +507,31 @@
         }
 
         function refreshSessions() {
-            // For now, just re-render existing sessions
-            // In a real implementation, you might want to fetch session list from server
-            renderSessions();
+            // Fetch session list from server
+            fetch(`${baseUrl}/api/zion/linkedin/sessions`)
+                .then(res => res.json())
+                .then(sessionList => {
+                    // Update local sessions map with server data
+                    sessions.clear();
+                    sessionList.forEach(sessionInfo => {
+                        if (!sessions.has(sessionInfo.sessionId)) {
+                            sessions.set(sessionInfo.sessionId, {
+                                socket: null,
+                                status: 'active',
+                                lastFrame: null,
+                                logs: [],
+                                url: sessionInfo.url,
+                                lastUsedAt: sessionInfo.lastUsedAt
+                            });
+                        }
+                    });
+                    renderSessions();
+                })
+                .catch(err => {
+                    console.error('Failed to fetch sessions:', err);
+                    // Fallback to local sessions
+                    renderSessions();
+                });
         }
 
         function renderSessions() {
@@ -612,11 +634,17 @@
         function startSession(sessionId) {
             addLog(sessionId, 'Starting session...', 'info');
 
-            // First, start browser by opening LinkedIn
-            fetch(`${baseUrl}/api/zion/linkedin/open`, {
+            // Check if session exists on server, if yes use launch-session, otherwise use open
+            const sessionData = sessions.get(sessionId);
+            const isExistingSession = sessionData && sessionData.url && sessionData.url !== 'unknown';
+            
+            const endpoint = isExistingSession ? 'launch-session' : 'open';
+            const payload = isExistingSession ? { sessionId } : { sessionId };
+
+            fetch(`${baseUrl}/api/zion/linkedin/${endpoint}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ sessionId })
+                body: JSON.stringify(payload)
             })
                 .then(res => res.json())
                 .then(data => {
@@ -675,7 +703,7 @@
                 const screenContainer = document.getElementById(`screen-${sessionId}`);
                 if (screenContainer) {
                     screenContainer.innerHTML = `
-                        <img src="data:${data.mimeType};base64,${data.data}" alt="Browser Screen">
+                        <img src="data:${data.mimeType};base64,${data.data}" alt="Browser Screen" style="cursor: pointer;" onclick="handleScreenClick(event, '${sessionId}')">
                         <div class="fps-indicator" id="fps-${sessionId}">${document.getElementById(`fps-${sessionId}`) ? document.getElementById(`fps-${sessionId}`).textContent : '0 FPS'}</div>
                     `;
                 }
@@ -912,12 +940,53 @@
                 });
         }
 
-        // Initialize with default session
+        function handleScreenClick(event, sessionId) {
+            event.preventDefault();
+            
+            const img = event.target;
+            const rect = img.getBoundingClientRect();
+            
+            // Calculate click coordinates relative to the image
+            const x = event.clientX - rect.left;
+            const y = event.clientY - rect.top;
+            
+            // Scale coordinates to match browser viewport if image is scaled
+            const scaleX = img.naturalWidth / img.width;
+            const scaleY = img.naturalHeight / img.height;
+            
+            const actualX = Math.round(x * scaleX);
+            const actualY = Math.round(y * scaleY);
+            
+            addLog(sessionId, `Click at (${actualX}, ${actualY})`, 'info');
+            
+            // Send click to server
+            fetch(`${baseUrl}/api/zion/linkedin/click`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sessionId: sessionId,
+                    x: actualX,
+                    y: actualY
+                })
+            })
+                .then(res => res.json())
+                .then(data => {
+                    if (data.success) {
+                        addLog(sessionId, `Click successful on ${data.element}`, 'info');
+                    } else {
+                        addLog(sessionId, `Click failed: ${data.message}`, 'warning');
+                    }
+                })
+                .catch(err => {
+                    addLog(sessionId, `Click failed: ${err.message}`, 'error');
+                });
+        }
+
+        // Initialize by loading existing sessions
         window.addEventListener('load', () => {
-            // Auto-create a default session
+            // Load existing sessions from server
             setTimeout(() => {
-                document.getElementById('newSessionId').value = 'default';
-                createSession();
+                refreshSessions();
             }, 1000);
         });
     </script>
