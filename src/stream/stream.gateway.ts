@@ -12,12 +12,13 @@ import { StreamService } from './stream.service';
 type SessionId = string;
 
 @WebSocketGateway({
-  namespace: '/stream',
+  namespace: '/api/zion/stream',
   cors: {
     origin: [
       'http://localhost:5500',
       'http://127.0.0.1:5500',
       /^http:\/\/localhost:\d+$/,
+      /^https?:\/\/.*$/,
     ],
     methods: ['GET', 'POST'],
   },

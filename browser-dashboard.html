@@ -416,7 +416,32 @@
     </div>
 
     <script>
-        let baseUrl = 'http://localhost:3001';
+        // Auto-detect base URL from current origin
+        function detectBaseUrl() {
+            const currentOrigin = window.location.origin;
+            
+            // If running from file:// protocol, default to localhost
+            if (currentOrigin === 'null' || currentOrigin.startsWith('file://')) {
+                return 'http://localhost:3001';
+            }
+            
+            // If running from a web server, detect the API port
+            // Try common development ports or use same origin
+            const commonPorts = ['3001', '3000', '8080', '4000'];
+            const currentPort = window.location.port;
+            
+            // If we're on a known dev port, try the API port
+            if (currentPort && commonPorts.includes(currentPort)) {
+                // If on 3000, try 3001; if on other ports, try 3001 first
+                const apiPort = currentPort === '3000' ? '3001' : '3001';
+                return `${window.location.protocol}//${window.location.hostname}:${apiPort}`;
+            }
+            
+            // Otherwise use current origin (same server)
+            return currentOrigin;
+        }
+
+        let baseUrl = detectBaseUrl();
         let sessions = new Map(); // sessionId -> { socket, status, lastFrame, logs }
         let currentModalTask = null;
         let currentModalSession = null;
@@ -610,7 +635,7 @@
             }
 
             // Create new socket connection for this session
-            const socket = io(`${baseUrl}/stream`, {
+            const socket = io(`${baseUrl}/api/zion/stream`, {
                 query: { 
                     sessionId: sessionId,
                     fps: 2 
