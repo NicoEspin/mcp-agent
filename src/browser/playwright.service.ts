@@ -310,7 +310,13 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       return await func(session.page);
     }
 
-    // Otherwise evaluate as JavaScript
+    // If code contains return statements, wrap it in a function
+    if (code.includes('return ')) {
+      const wrappedCode = `(() => { ${code} })()`;
+      return await session.page.evaluate(wrappedCode);
+    }
+
+    // Otherwise evaluate as JavaScript expression
     return await session.page.evaluate(code);
   }
 
