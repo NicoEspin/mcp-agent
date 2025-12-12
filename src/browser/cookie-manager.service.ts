@@ -49,12 +49,6 @@ export class CookieManagerService {
         return false;
       }
 
-      // Check if cookie is expired
-      if (liAtCookie.expires && liAtCookie.expires < Date.now()) {
-        this.logger.debug(`li_at cookie expired for session ${sessionId}`);
-        return false;
-      }
-
       this.logger.debug(`Valid li_at cookie found for session ${sessionId}`);
       return true;
     } catch (error) {
@@ -68,7 +62,6 @@ export class CookieManagerService {
    */
   async isLinkedInLoggedInRealTime(sessionId: string, context: BrowserContext): Promise<boolean> {
     try {
-      // Get cookies from multiple LinkedIn URLs
       const linkedinUrls = [
         'https://www.linkedin.com',
         'https://linkedin.com', 
@@ -78,7 +71,6 @@ export class CookieManagerService {
 
       let allCookies: any[] = [];
       
-      // Try each URL to get cookies
       for (const url of linkedinUrls) {
         try {
           const urlCookies = await context.cookies(url);
@@ -88,7 +80,6 @@ export class CookieManagerService {
         }
       }
 
-      // Also get all cookies without URL filter as fallback
       try {
         const generalCookies = await context.cookies();
         allCookies = allCookies.concat(generalCookies);
@@ -96,7 +87,6 @@ export class CookieManagerService {
         this.logger.debug(`Failed to get general cookies: ${error}`);
       }
 
-      // Remove duplicates and find li_at
       const uniqueCookies = allCookies.filter((cookie, index, self) => 
         index === self.findIndex(c => c.name === cookie.name && c.domain === cookie.domain)
       );
@@ -108,13 +98,7 @@ export class CookieManagerService {
         return false;
       }
 
-      // Check if cookie is expired
-      if (liAtCookie.expires && liAtCookie.expires < Date.now()) {
-        this.logger.debug(`🔍 Real-time check: li_at cookie expired for session ${sessionId}`);
-        return false;
-      }
-
-      this.logger.log(`🔍 Real-time check: Valid li_at cookie found for session ${sessionId} (${liAtCookie.value.slice(0, 10)}... domain: ${liAtCookie.domain})`);
+      this.logger.log(`🔍 Real-time check: li_at FOUND for session ${sessionId} (${liAtCookie.value.slice(0, 10)}... domain: ${liAtCookie.domain})`);
       return true;
     } catch (error) {
       this.logger.warn(`Error in real-time LinkedIn login check: ${error}`);
