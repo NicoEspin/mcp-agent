@@ -419,7 +419,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
         }
         
         // Remove the broken session
-        this.sessions.delete(sessionId);
+      this.sessions.delete(sessionId);
         session = undefined;
       }
     }
@@ -430,6 +430,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
         viewport: this.getViewportSize(),
         ignoreHTTPSErrors: true,
         bypassCSP: true,
+        ...this.getContextFingerprint(),
       });
 
       // Restore cookies for this session (especially LinkedIn authentication)
@@ -487,6 +488,32 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
   private getTimeoutNavigation() {
     return Number(this.config.get('PLAYWRIGHT_TIMEOUT_NAVIGATION') ?? 90000);
+  }
+
+  private getContextFingerprint() {
+    const userAgent =
+      this.config.get<string>('PLAYWRIGHT_USER_AGENT') ??
+      'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36';
+    const locale = this.config.get<string>('PLAYWRIGHT_LOCALE') ?? 'es-AR';
+    const timezoneId =
+      this.config.get<string>('PLAYWRIGHT_TIMEZONE') ??
+      'America/Argentina/Buenos_Aires';
+
+    const lat = Number(
+      this.config.get<string>('PLAYWRIGHT_GEO_LAT') ?? '-34.6037',
+    );
+    const lon = Number(
+      this.config.get<string>('PLAYWRIGHT_GEO_LON') ?? '-58.3816',
+    );
+    const hasGeo = Number.isFinite(lat) && Number.isFinite(lon);
+
+    return {
+      userAgent,
+      locale,
+      timezoneId,
+      geolocation: hasGeo ? { latitude: lat, longitude: lon } : undefined,
+      permissions: hasGeo ? ['geolocation'] : undefined,
+    };
   }
 
   // Public API methods - direct replacements for MCP calls
