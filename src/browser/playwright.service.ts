@@ -159,7 +159,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       if (!isValid) {
         this.logger.warn(`Session ${sessionId} is no longer valid, recreating...`);
         await this.cleanupSession(sessionId);
-        session = null;
+        session = undefined;
       }
     }
 
