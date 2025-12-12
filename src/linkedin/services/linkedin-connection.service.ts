@@ -24,9 +24,7 @@ export class LinkedinConnectionService {
 
   // session-aware
   private async hasTool(sessionId: SessionId, name: string) {
-    const res = await this.mcp.listTools(sessionId);
-    const tools = extractTools(res);
-    return tools.some((t: any) => t?.name === name);
+    return this.playwright.hasTool(name);
   }
 
   private async captureProfileScreenshot(
