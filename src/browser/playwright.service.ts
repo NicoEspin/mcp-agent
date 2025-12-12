@@ -18,6 +18,7 @@ import type {
   Modifier as StreamModifier,
   MouseButton,
 } from '../stream/stream.types';
+import { CookieManagerService } from './cookie-manager.service';
 import * as path from 'path';
 import * as fs from 'fs';
 
@@ -42,7 +43,10 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   private readonly DEFAULT_SESSION_ID = 'default';
   private keepaliveTimer: NodeJS.Timeout | null = null;
 
-  constructor(private readonly config: ConfigService) {}
+  constructor(
+    private readonly config: ConfigService,
+    private readonly cookieManager: CookieManagerService,
+  ) {}
 
   private normalizeButton(btn?: MouseButton): MouseButton {
     return btn ?? 'left';
@@ -428,6 +432,12 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
         bypassCSP: true,
       });
 
+      // Restore cookies for this session (especially LinkedIn authentication)
+      const cookiesRestored = await this.cookieManager.restoreCookies(sessionId, context, 'linkedin.com');
+      if (cookiesRestored) {
+        this.logger.log(`Cookies restored for session ${sessionId}`);
+      }
+
       // Block service workers if configured
       if (this.config.get<string>('PLAYWRIGHT_BLOCK_SW') === 'true') {
         await context.route('**/*', (route) => {
@@ -490,7 +500,26 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       waitUntil: 'domcontentloaded',
       timeout: this.getTimeoutNavigation(),
     });
+    
+    // If navigating to LinkedIn, save cookies after navigation
+    if (url.includes('linkedin.com')) {
+      await this.saveCookiesAfterDelay(sessionId, session.context);
+    }
+    
     this.logger.debug(`Navigated to ${url} (session: ${sessionId})`);
+  }
+
+  /**
+   * Save cookies after a delay to ensure they're set
+   */
+  private async saveCookiesAfterDelay(sessionId: SessionId, context: BrowserContext, delay: number = 2000): Promise<void> {
+    setTimeout(async () => {
+      try {
+        await this.cookieManager.saveCookies(sessionId, context, 'linkedin.com');
+      } catch (error) {
+        this.logger.warn(`Failed to save cookies for session ${sessionId}: ${error}`);
+      }
+    }, delay);
   }
 
   async runCode(
@@ -680,5 +709,51 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
         { name: 'browser_snapshot', description: 'Get page content' },
       ],
     };
+  }
+
+  // Cookie management methods
+
+  /**
+   * Check if user is logged into LinkedIn
+   */
+  async isLinkedInLoggedIn(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<boolean> {
+    return this.cookieManager.isLinkedInLoggedIn(sessionId);
+  }
+
+  /**
+   * Extract and save LinkedIn authentication token
+   */
+  async extractLinkedInAuth(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<string | null> {
+    const session = await this.getSession(sessionId);
+    return this.cookieManager.extractLinkedInAuth(sessionId, session.page);
+  }
+
+  /**
+   * Get stored LinkedIn authentication token
+   */
+  async getLinkedInAuthToken(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<string | null> {
+    return this.cookieManager.getLinkedInAuthToken(sessionId);
+  }
+
+  /**
+   * Save current session cookies
+   */
+  async saveCookies(sessionId: SessionId = this.DEFAULT_SESSION_ID, domain: string = 'linkedin.com'): Promise<void> {
+    const session = await this.getSession(sessionId);
+    return this.cookieManager.saveCookies(sessionId, session.context, domain);
+  }
+
+  /**
+   * Clear saved cookies for a session
+   */
+  async clearCookies(sessionId: SessionId = this.DEFAULT_SESSION_ID, domain: string = 'linkedin.com'): Promise<void> {
+    return this.cookieManager.clearCookies(sessionId, domain);
+  }
+
+  /**
+   * List all sessions with saved cookies
+   */
+  async listSavedSessions(): Promise<{ sessionId: string; domain: string; timestamp: number; hasLiAt: boolean }[]> {
+    return this.cookieManager.listSavedSessions();
   }
 }
