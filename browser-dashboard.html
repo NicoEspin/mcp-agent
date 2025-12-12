@@ -634,6 +634,15 @@
         function startSession(sessionId) {
             addLog(sessionId, 'Starting session...', 'info');
 
+            // Update placeholder to show we're starting
+            const screenContainer = document.getElementById(`screen-${sessionId}`);
+            if (screenContainer) {
+                screenContainer.innerHTML = `
+                    <div class="screen-placeholder">Initializing browser session...</div>
+                    <div class="fps-indicator" id="fps-${sessionId}" style="display: none;">0 FPS</div>
+                `;
+            }
+
             // Check if session exists on server, if yes use launch-session, otherwise use open
             const sessionData = sessions.get(sessionId);
             const isExistingSession = sessionData && sessionData.url && sessionData.url !== 'unknown';
@@ -651,12 +660,28 @@
                     addLog(sessionId, 'Browser opened successfully', 'info');
                     updateSessionStatus(sessionId, 'active');
 
+                    // Update placeholder to show we're connecting to stream
+                    if (screenContainer) {
+                        screenContainer.innerHTML = `
+                            <div class="screen-placeholder">Connecting to screenshot stream...</div>
+                            <div class="fps-indicator" id="fps-${sessionId}" style="display: none;">0 FPS</div>
+                        `;
+                    }
+
                     // Start streaming
                     startStreaming(sessionId);
                 })
                 .catch(err => {
                     addLog(sessionId, `Failed to start browser: ${err.message}`, 'error');
                     updateSessionStatus(sessionId, 'inactive');
+                    
+                    // Reset placeholder on error
+                    if (screenContainer) {
+                        screenContainer.innerHTML = `
+                            <div class="screen-placeholder">Failed to start session. Click "Start" to retry.</div>
+                            <div class="fps-indicator" id="fps-${sessionId}" style="display: none;">0 FPS</div>
+                        `;
+                    }
                 });
         }
 
@@ -685,6 +710,26 @@
             socket.on('connect', () => {
                 addLog(sessionId, 'Stream connected', 'info');
                 document.getElementById(`fps-${sessionId}`).style.display = 'block';
+                
+                // Update placeholder to indicate we're waiting for first frame
+                const screenContainer = document.getElementById(`screen-${sessionId}`);
+                if (screenContainer && !screenContainer.querySelector('img')) {
+                    screenContainer.innerHTML = `
+                        <div class="screen-placeholder">Stream connected, waiting for first screenshot...</div>
+                        <div class="fps-indicator" id="fps-${sessionId}">0 FPS</div>
+                    `;
+                }
+                
+                // Set a timeout to show error if no frames received after 10 seconds
+                setTimeout(() => {
+                    if (screenContainer && screenContainer.querySelector('.screen-placeholder')) {
+                        const placeholder = screenContainer.querySelector('.screen-placeholder');
+                        if (placeholder && placeholder.textContent.includes('waiting for first screenshot')) {
+                            placeholder.textContent = 'No screenshots received. Browser session may not be active or accessible.';
+                            addLog(sessionId, 'No screenshots received after 10 seconds. Check if browser session is properly initialized.', 'warning');
+                        }
+                    }
+                }, 10000);
             });
 
             socket.on('frame', (data) => {
@@ -712,10 +757,14 @@
             });
 
             socket.on('frame_error', (error) => {
-                addLog(sessionId, `Stream error: ${error.message}`, 'error');
+                const errorMsg = error.message || 'Unknown stream error';
+                addLog(sessionId, `Stream error: ${errorMsg}`, 'error');
                 const screenContainer = document.getElementById(`screen-${sessionId}`);
                 if (screenContainer) {
-                    screenContainer.innerHTML = `<div class="screen-placeholder">Stream Error: ${error.message}</div>`;
+                    screenContainer.innerHTML = `
+                        <div class="screen-placeholder">Stream Error: ${errorMsg}<br><small>Try restarting the session or check browser logs</small></div>
+                        <div class="fps-indicator" id="fps-${sessionId}" style="display: none;">0 FPS</div>
+                    `;
                 }
             });
 

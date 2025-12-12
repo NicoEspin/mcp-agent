@@ -17,7 +17,6 @@ export class StreamService {
 
   constructor(private readonly playwright: PlaywrightService) {}
 
-
   async getScreenshotBase64(
     sessionId: SessionId = 'default',
   ): Promise<ScreenshotResult> {
@@ -26,13 +25,20 @@ export class StreamService {
     if (existing) return existing;
 
     const promise = (async () => {
-      const screenshot = await this.playwright.takeScreenshot(
-        { type: 'jpeg', fullPage: false },
-        sessionId
-      );
+      try {
+        this.logger.debug(`Taking screenshot for session: ${sessionId}`);
+        const screenshot = await this.playwright.takeScreenshot(
+          { type: 'jpeg', fullPage: false },
+          sessionId,
+        );
 
-      this.lastFrames.set(sessionId, { ...screenshot, ts: Date.now() });
-      return screenshot;
+        this.lastFrames.set(sessionId, { ...screenshot, ts: Date.now() });
+        this.logger.debug(`Screenshot captured successfully for session: ${sessionId}`);
+        return screenshot;
+      } catch (error) {
+        this.logger.error(`Failed to take screenshot for session ${sessionId}:`, error);
+        throw new Error(`Screenshot failed for session ${sessionId}: ${error.message}`);
+      }
     })();
 
     this.inFlight.set(sessionId, promise);
