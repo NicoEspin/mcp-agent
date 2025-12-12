@@ -132,10 +132,13 @@ async (page) => {
     console.log('[send-connection]', msg, 'url=', page.url());
   };
 
-  // Function to handle note modal
+  // Function to handle note modal with human-like behavior
   const handleNoteModal = async (page, note, debug) => {
     try {
       await debug('Verificando si apareció modal de nota');
+      
+      // Human-like delay before checking modal
+      await page.waitForTimeout(1000 + Math.random() * 1000); // 1-2 seconds
       
       // Multiple selectors for the note modal
       const modalSelectors = [
@@ -143,7 +146,8 @@ async (page) => {
         '.send-invite',
         'div[role="dialog"]',
         '.artdeco-modal',
-        '[aria-labelledby*="invite" i]'
+        '[aria-labelledby*="invite" i]',
+        '.artdeco-modal-overlay'
       ];
       
       let modal = null;
@@ -164,16 +168,61 @@ async (page) => {
       
       // If note is provided, add it
       if (note && note.trim()) {
-        await debug('Añadiendo nota personalizada');
+        await debug('Procesando nota personalizada');
         
-        // Multiple selectors for the note textarea
+        // STEP 1: Look for "Añadir una nota" button first
+        await debug('Buscando botón "Añadir una nota"');
+        
+        const addNoteButtonSelectors = [
+          'button[aria-label*="Añadir una nota" i]',
+          'button[aria-label*="Add a note" i]',
+          'button:has-text("Añadir una nota")',
+          'button:has-text("Add a note")',
+          'button.artdeco-button--secondary:has-text("Añadir")',
+          'button.artdeco-button--secondary:has(span:text("Añadir una nota"))',
+          '[id*="ember"] button:has-text("Añadir una nota")'
+        ];
+        
+        let addNoteButton = null;
+        for (const selector of addNoteButtonSelectors) {
+          const btnEl = modal.locator(selector).first();
+          const isVisible = await btnEl.isVisible().catch(() => false);
+          if (isVisible) {
+            addNoteButton = btnEl;
+            await debug('Botón "Añadir una nota" encontrado: ' + selector);
+            break;
+          }
+        }
+        
+        // Click "Añadir una nota" button if found
+        if (addNoteButton) {
+          await debug('Haciendo click en "Añadir una nota"');
+          
+          // Human-like delay and hover before click
+          await addNoteButton.hover();
+          await page.waitForTimeout(300 + Math.random() * 200); // 300-500ms
+          
+          await addNoteButton.click({ timeout: 5000 });
+          
+          // Wait for textarea to appear
+          await page.waitForTimeout(800 + Math.random() * 400); // 800-1200ms
+        }
+        
+        // STEP 2: Find the textarea (now should be visible)
+        await debug('Buscando campo de texto para la nota');
+        
         const textareaSelectors = [
           'textarea[name="message"]',
+          'textarea#custom-message',
+          'textarea[id*="custom-message"]',
+          'textarea[placeholder*="Por ejemplo" i]',
+          'textarea[placeholder*="Nos conocimos" i]',
+          'textarea.connect-button-send-invite__custom-message',
+          'textarea.ember-text-area',
           'textarea[aria-label*="message" i]',
           'textarea[aria-label*="nota" i]',
           'textarea[placeholder*="message" i]',
-          'textarea[placeholder*="nota" i]',
-          '.send-invite__custom-message textarea',
+          'textarea[minlength="1"]',
           'textarea'
         ];
         
@@ -189,27 +238,67 @@ async (page) => {
         }
         
         if (textarea) {
-          // Clear existing text and add our note
+          await debug('Escribiendo nota personalizada');
+          
+          // Human-like interaction with textarea
+          await textarea.hover();
+          await page.waitForTimeout(200 + Math.random() * 300); // 200-500ms
+          
+          await textarea.click();
+          await page.waitForTimeout(100 + Math.random() * 200); // 100-300ms
+          
+          // Clear existing text and add our note with human typing speed
           await textarea.fill('');
-          await textarea.type(note, { delay: 50 });
+          await page.waitForTimeout(150 + Math.random() * 100); // 150-250ms
+          
+          // Type with human-like speed and occasional pauses
+          const chars = note.split('');
+          for (let i = 0; i < chars.length; i++) {
+            await textarea.type(chars[i]);
+            
+            // Variable typing speed
+            let delay = 80 + Math.random() * 120; // 80-200ms per character
+            
+            // Occasional longer pauses (thinking/hesitation)
+            if (Math.random() < 0.1) { // 10% chance
+              delay += 300 + Math.random() * 500; // Extra 300-800ms pause
+            }
+            
+            // Pause after punctuation
+            if (['.', ',', '!', '?'].includes(chars[i])) {
+              delay += 100 + Math.random() * 200; // Extra 100-300ms after punctuation
+            }
+            
+            await page.waitForTimeout(delay);
+          }
+          
+          // Small pause after typing
+          await page.waitForTimeout(300 + Math.random() * 500); // 300-800ms
+          
           await debug('Nota añadida: ' + note.slice(0, 50) + '...');
         } else {
           await debug('No se encontró textarea para la nota');
         }
       }
       
-      // Click send button
+      // STEP 3: Click send button with human-like behavior
       await debug('Buscando botón de envío');
+      
+      // Human-like delay before looking for send button
+      await page.waitForTimeout(500 + Math.random() * 500); // 500-1000ms
+      
       const sendButtonSelectors = [
+        'button:has(span.artdeco-button__text:text("Enviar"))',
+        'button:has-text("Enviar")',
         'button[aria-label*="Send" i]',
         'button[aria-label*="Enviar" i]',
         'button[data-control-name="send_invite"]',
         'button[type="submit"]',
         'button.artdeco-button--primary',
         'button:has-text("Send")',
-        'button:has-text("Enviar")',
         'button:has-text("Send invitation")',
-        'button:has-text("Enviar invitación")'
+        'button:has-text("Enviar invitación")',
+        '.artdeco-button--primary:has-text("Enviar")'
       ];
       
       let sendButton = null;
@@ -225,8 +314,20 @@ async (page) => {
       }
       
       if (sendButton) {
+        await debug('Preparando envío de conexión');
+        
+        // Human-like interaction with send button
+        await sendButton.hover();
+        await page.waitForTimeout(400 + Math.random() * 300); // 400-700ms
+        
+        // Small delay before final click (user thinking)
+        await page.waitForTimeout(200 + Math.random() * 400); // 200-600ms
+        
         await sendButton.click({ timeout: 5000 });
-        await page.waitForTimeout(1500); // Wait for the action to complete
+        
+        // Wait for the action to complete
+        await page.waitForTimeout(1500 + Math.random() * 1000); // 1.5-2.5 seconds
+        
         await debug('Conexión enviada con modal completado');
         return true;
       } else {
