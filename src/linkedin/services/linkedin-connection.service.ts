@@ -129,7 +129,122 @@ async (page) => {
   const note = ${JSON.stringify(note ?? '')};
 
   const debug = (msg) => {
-    console.log('[send-connection:popover]', msg, 'url=', page.url());
+    console.log('[send-connection]', msg, 'url=', page.url());
+  };
+
+  // Function to handle note modal
+  const handleNoteModal = async (page, note, debug) => {
+    try {
+      await debug('Verificando si apareció modal de nota');
+      
+      // Multiple selectors for the note modal
+      const modalSelectors = [
+        '[data-test-modal-id="send-invite-modal"]',
+        '.send-invite',
+        'div[role="dialog"]',
+        '.artdeco-modal',
+        '[aria-labelledby*="invite" i]'
+      ];
+      
+      let modal = null;
+      for (const selector of modalSelectors) {
+        const modalEl = page.locator(selector).first();
+        const isVisible = await modalEl.isVisible().catch(() => false);
+        if (isVisible) {
+          modal = modalEl;
+          await debug('Modal encontrado con selector: ' + selector);
+          break;
+        }
+      }
+      
+      if (!modal) {
+        await debug('No se encontró modal de nota, conexión enviada sin nota');
+        return false;
+      }
+      
+      // If note is provided, add it
+      if (note && note.trim()) {
+        await debug('Añadiendo nota personalizada');
+        
+        // Multiple selectors for the note textarea
+        const textareaSelectors = [
+          'textarea[name="message"]',
+          'textarea[aria-label*="message" i]',
+          'textarea[aria-label*="nota" i]',
+          'textarea[placeholder*="message" i]',
+          'textarea[placeholder*="nota" i]',
+          '.send-invite__custom-message textarea',
+          'textarea'
+        ];
+        
+        let textarea = null;
+        for (const selector of textareaSelectors) {
+          const textEl = modal.locator(selector).first();
+          const isVisible = await textEl.isVisible().catch(() => false);
+          if (isVisible) {
+            textarea = textEl;
+            await debug('Textarea encontrado con selector: ' + selector);
+            break;
+          }
+        }
+        
+        if (textarea) {
+          // Clear existing text and add our note
+          await textarea.fill('');
+          await textarea.type(note, { delay: 50 });
+          await debug('Nota añadida: ' + note.slice(0, 50) + '...');
+        } else {
+          await debug('No se encontró textarea para la nota');
+        }
+      }
+      
+      // Click send button
+      await debug('Buscando botón de envío');
+      const sendButtonSelectors = [
+        'button[aria-label*="Send" i]',
+        'button[aria-label*="Enviar" i]',
+        'button[data-control-name="send_invite"]',
+        'button[type="submit"]',
+        'button.artdeco-button--primary',
+        'button:has-text("Send")',
+        'button:has-text("Enviar")',
+        'button:has-text("Send invitation")',
+        'button:has-text("Enviar invitación")'
+      ];
+      
+      let sendButton = null;
+      for (const selector of sendButtonSelectors) {
+        const btnEl = modal.locator(selector).first();
+        const isVisible = await btnEl.isVisible().catch(() => false);
+        const isEnabled = isVisible ? await btnEl.isEnabled().catch(() => false) : false;
+        if (isVisible && isEnabled) {
+          sendButton = btnEl;
+          await debug('Botón de envío encontrado: ' + selector);
+          break;
+        }
+      }
+      
+      if (sendButton) {
+        await sendButton.click({ timeout: 5000 });
+        await page.waitForTimeout(1500); // Wait for the action to complete
+        await debug('Conexión enviada con modal completado');
+        return true;
+      } else {
+        await debug('No se encontró botón de envío válido');
+        // Try to close modal and proceed
+        const closeButtons = modal.locator('[aria-label*="dismiss" i], [aria-label*="close" i], button:has-text("×")');
+        const closeBtn = closeButtons.first();
+        const closeVisible = await closeBtn.isVisible().catch(() => false);
+        if (closeVisible) {
+          await closeBtn.click();
+        }
+        return false;
+      }
+      
+    } catch (error) {
+      await debug('Error manejando modal de nota: ' + (error?.message || error));
+      return false;
+    }
   };
 
   // Limitar tiempos por acción para no pasarnos del timeout global del MCP
@@ -203,9 +318,19 @@ async (page) => {
     try {
       await debug('Click en botón "Conectar" directo');
       await directConnectBtn.click({ timeout: 6000, force: true });
-      await page.waitForTimeout(1000);
+      await page.waitForTimeout(2000); // Wait for modal to appear
+      
+      // Handle note modal if it appears
+      const noteHandled = await handleNoteModal(page, note, debug);
+      
       await debug('Flujo de conexión directa finalizado');
-      return { ok: true, viaDirect: true, selector: usedSelector, noteLength: note.length };
+      return { 
+        ok: true, 
+        viaDirect: true, 
+        selector: usedSelector, 
+        noteLength: note.length,
+        noteAdded: noteHandled 
+      };
     } catch (clickError) {
       await debug('Error al hacer click en botón directo: ' + (clickError?.message || clickError));
       // Fall through to dropdown approach
@@ -267,14 +392,20 @@ async (page) => {
   await debug('Click en "Conectar" dentro del dropdown');
   await connectButton.click({ timeout: 6000, force: true });
 
-  // 7) Pequeña espera para que LinkedIn procese la acción
-  await page.waitForTimeout(800);
+  // 7) Espera y manejo del modal de nota
+  await page.waitForTimeout(2000); // Wait for modal to appear
+  
+  // Handle note modal if it appears
+  const noteHandled = await handleNoteModal(page, note, debug);
 
   await debug('Flujo de conexión por dropdown finalizado');
 
-  // Podrías extender esto para rellenar nota si LinkedIn abre un modal de "Añadir nota".
-  // Devolvemos un resultado simple para que aparezca en toolResult.
-  return { ok: true, viaPopover: true, noteLength: note.length };
+  return { 
+    ok: true, 
+    viaPopover: true, 
+    noteLength: note.length,
+    noteAdded: noteHandled 
+  };
 }
 `;
 
