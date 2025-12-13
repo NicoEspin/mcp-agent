@@ -158,11 +158,6 @@ No incluyas texto fuera del JSON.
     sessionId = 'default',
     force = false,
   ): Promise<LinkedinSessionCheck> {
-    const prev = this.lastChecks.get(sessionId);
-    if (!force && prev && this.isFresh(prev)) {
-      return prev;
-    }
-
     try {
       const isLoggedIn = await this.playwright.isLinkedInLoggedIn(sessionId);
       const hasToken = isLoggedIn
