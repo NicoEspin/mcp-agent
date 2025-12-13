@@ -207,22 +207,71 @@ return JSON.stringify(result);
     limit = 30,
     threadHint?: string,
   ) {
+    const startTime = Date.now();
     const code = this.buildReadChatCode(profileUrl, limit, threadHint);
+    
+    const verboseResult = {
+      ok: true,
+      profileUrl,
+      limit,
+      threadHint,
+      sessionId,
+      executionDetails: {
+        startTime,
+        endTime: null as number | null,
+        executionTimeMs: null as number | null,
+        method: 'playwright_direct_execution',
+        codeLength: code.length,
+        fallbackAttempts: 0,
+        steps: [] as string[],
+        errors: [] as any[]
+      },
+      data: null as any,
+      toolResult: null as any,
+    };
 
     try {
+      verboseResult.executionDetails.steps.push('Generated JavaScript code for Playwright execution');
+      verboseResult.executionDetails.steps.push(`Code length: ${code.length} characters`);
+      verboseResult.executionDetails.steps.push('Starting Playwright runCode execution');
+
       const result = await this.playwright.runCode(code, sessionId);
 
+      verboseResult.executionDetails.steps.push('Playwright execution completed successfully');
+      verboseResult.executionDetails.steps.push(`Messages extracted: ${result?.messages?.length || 0}`);
+      
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+
       // Result is already the parsed data from the page evaluation
-      return {
-        ok: true,
+      verboseResult.data = result;
+      verboseResult.toolResult = result;
+      
+      this.logger.debug(`readChat completed successfully in ${verboseResult.executionDetails.executionTimeMs}ms`);
+      
+      return verboseResult;
+    } catch (e: any) {
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.errors.push({
+        message: e?.message ?? 'Unknown error',
+        stack: e?.stack,
+        timestamp: endTime
+      });
+      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
+
+      this.logger.warn(`readChat failed: ${e?.message ?? e}`);
+      
+      return { 
+        ok: false, 
+        error: e?.message ?? 'Unknown error',
+        executionDetails: verboseResult.executionDetails,
         profileUrl,
         limit,
-        data: result,
-        toolResult: result,
+        sessionId
       };
-    } catch (e: any) {
-      this.logger.warn(`readChat failed: ${e?.message ?? e}`);
-      return { ok: false, error: e?.message ?? 'Unknown error' };
     }
   }
 
@@ -233,7 +282,32 @@ return JSON.stringify(result);
   // sendMessage multi-sesión
   // -----------------------------
   async sendMessage(sessionId: SessionId, profileUrl: string, message: string) {
+    const startTime = Date.now();
+    
+    const verboseResult = {
+      ok: true,
+      profileUrl,
+      messagePreview: message.slice(0, 80),
+      messageLength: message.length,
+      sessionId,
+      executionDetails: {
+        startTime,
+        endTime: null as number | null,
+        executionTimeMs: null as number | null,
+        method: 'playwright_direct_execution',
+        fallbackAttempts: 0,
+        steps: [] as string[],
+        errors: [] as any[],
+        playwrightLogs: [] as string[]
+      },
+      note: null as string | null,
+      result: null as any,
+    };
+
     // Direct Playwright execution - no tool checking needed
+    verboseResult.executionDetails.steps.push('Starting sendMessage execution');
+    verboseResult.executionDetails.steps.push(`Message length: ${message.length} characters`);
+    verboseResult.executionDetails.steps.push('Building Playwright execution code');
 
     const code = `
 async (page) => {
@@ -242,6 +316,7 @@ async (page) => {
 
   const debug = async (msg) => {
     console.log('[send-message]', msg, 'url=', page.url());
+    return msg;
   };
 
   // 1) Ir al perfil
@@ -469,22 +544,46 @@ async (page) => {
 `;
 
     try {
+      verboseResult.executionDetails.steps.push(`Code length: ${code.length} characters`);
+      verboseResult.executionDetails.steps.push('Executing Playwright code');
+      
       const result = await this.playwright.runCode(code, sessionId);
+
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.steps.push('Playwright execution completed successfully');
+      verboseResult.executionDetails.steps.push(`Result: ${JSON.stringify(result)}`);
+
+      verboseResult.note = 'Mensaje enviado vía Playwright directo.';
+      verboseResult.result = result;
 
       this.logger.debug(
         'playwright result: ' + JSON.stringify(result, null, 2),
       );
 
-      return {
-        ok: true,
+      return verboseResult;
+    } catch (e: any) {
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.errors.push({
+        message: e?.message ?? 'Unknown error',
+        stack: e?.stack,
+        timestamp: endTime
+      });
+      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
+
+      this.logger.warn(`sendMessage failed: ${e?.message ?? 'Unknown error'}`);
+      
+      return { 
+        ok: false, 
+        error: e?.message ?? 'Unknown error',
+        executionDetails: verboseResult.executionDetails,
         profileUrl,
         messagePreview: message.slice(0, 80),
-        note: 'Mensaje enviado vía Playwright directo.',
-        result,
+        sessionId
       };
-    } catch (e: any) {
-      this.logger.warn(`sendMessage failed: ${e?.message ?? 'Unknown error'}`);
-      return { ok: false, error: e?.message ?? 'Unknown error' };
     }
   }
 }

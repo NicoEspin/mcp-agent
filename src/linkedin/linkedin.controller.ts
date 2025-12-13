@@ -57,7 +57,7 @@ export class LinkedinController {
   @Post('check-connection')
   async checkConnection(
     @Body() dto: CheckConnectionDto,
-  ): Promise<boolean> {
+  ): Promise<any> {
     const sessionId = dto.sessionId ?? 'default';
 
     return this.linkedin.checkConnection(sessionId, dto.profileUrl);
@@ -74,10 +74,52 @@ export class LinkedinController {
     },
   ) {
     const sessionId = body?.sessionId ?? 'default';
+    const startTime = Date.now();
+    const targetUrl = 'https://www.linkedin.com/';
 
-    // Esto forzará la apertura de Chromium si está en modo headed
-    await this.playwright.navigate('https://www.linkedin.com/', sessionId);
-    return { success: true, url: 'https://www.linkedin.com/', sessionId };
+    const verboseResult = {
+      success: true,
+      url: targetUrl,
+      sessionId,
+      executionDetails: {
+        startTime,
+        endTime: null as number | null,
+        executionTimeMs: null as number | null,
+        method: 'playwright_navigate',
+        browserType: 'chromium',
+        steps: [] as string[],
+        errors: [] as any[]
+      }
+    };
+
+    try {
+      verboseResult.executionDetails.steps.push(`Starting LinkedIn open for session: ${sessionId}`);
+      verboseResult.executionDetails.steps.push(`Target URL: ${targetUrl}`);
+      verboseResult.executionDetails.steps.push('Initiating Playwright navigation (will force Chromium open if in headed mode)');
+
+      // Esto forzará la apertura de Chromium si está en modo headed
+      await this.playwright.navigate(targetUrl, sessionId);
+      
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.steps.push(`Navigation completed successfully in ${verboseResult.executionDetails.executionTimeMs}ms`);
+
+      return verboseResult;
+    } catch (e: any) {
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.success = false;
+      verboseResult.executionDetails.errors.push({
+        message: e?.message ?? 'Unknown error',
+        stack: e?.stack,
+        timestamp: endTime
+      });
+      verboseResult.executionDetails.steps.push(`Navigation failed: ${e?.message ?? 'Unknown error'}`);
+
+      return verboseResult;
+    }
   }
 
   // -------------------
@@ -100,6 +142,57 @@ export class LinkedinController {
     },
   ) {
     const sessionId = body?.sessionId ?? 'default';
-    return this.playwright.stopSession(sessionId);
+    const startTime = Date.now();
+
+    const verboseResult = {
+      success: false,
+      message: '',
+      sessionId,
+      executionDetails: {
+        startTime,
+        endTime: null as number | null,
+        executionTimeMs: null as number | null,
+        method: 'playwright_session_cleanup',
+        steps: [] as string[],
+        errors: [] as any[]
+      }
+    };
+
+    try {
+      verboseResult.executionDetails.steps.push(`Starting session cleanup for: ${sessionId}`);
+      
+      const result = await this.playwright.stopSession(sessionId);
+      
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.success = result.success;
+      verboseResult.message = result.message;
+      
+      if (result.success) {
+        verboseResult.executionDetails.steps.push(`Session stopped successfully: ${result.message}`);
+      } else {
+        verboseResult.executionDetails.steps.push(`Session stop failed: ${result.message}`);
+        verboseResult.executionDetails.errors.push({
+          message: result.message,
+          timestamp: endTime
+        });
+      }
+
+      return verboseResult;
+    } catch (e: any) {
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.errors.push({
+        message: e?.message ?? 'Unknown error',
+        stack: e?.stack,
+        timestamp: endTime
+      });
+      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
+      verboseResult.message = e?.message ?? 'Unknown error';
+
+      return verboseResult;
+    }
   }
 }

@@ -122,13 +122,13 @@ export class LinkedinService {
   // -------------------------------
   // Legacy:
   //   checkConnection(profileUrl)
-  checkConnection(profileUrl: string): Promise<boolean>;
+  checkConnection(profileUrl: string): Promise<any>;
 
   // Nuevo:
   //   checkConnection(sessionId, profileUrl)
-  checkConnection(sessionId: string, profileUrl: string): Promise<boolean>;
+  checkConnection(sessionId: string, profileUrl: string): Promise<any>;
 
-  async checkConnection(a: string, b?: string): Promise<boolean> {
+  async checkConnection(a: string, b?: string): Promise<any> {
     // Nueva firma: (sessionId, profileUrl)
     if (typeof b === 'string') {
       const sessionId = a;

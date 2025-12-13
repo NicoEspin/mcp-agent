@@ -25,16 +25,24 @@ export class LinkedinConnectionService {
   /**
    * Check if user is logged into LinkedIn and log status
    */
-  private async checkAndLogLinkedInAuth(sessionId: SessionId): Promise<boolean> {
+  private async checkAndLogLinkedInAuth(
+    sessionId: SessionId,
+  ): Promise<boolean> {
     const isLoggedIn = await this.playwright.isLinkedInLoggedIn(sessionId);
-    const authToken = isLoggedIn ? await this.playwright.getLinkedInAuthToken(sessionId) : null;
-    
+    const authToken = isLoggedIn
+      ? await this.playwright.getLinkedInAuthToken(sessionId)
+      : null;
+
     if (isLoggedIn && authToken) {
-      this.logger.log(`✅ LinkedIn authenticated for session ${sessionId} (li_at: ${authToken.slice(0, 10)}...)`);
+      this.logger.log(
+        `✅ LinkedIn authenticated for session ${sessionId} (li_at: ${authToken.slice(0, 10)}...)`,
+      );
     } else {
-      this.logger.warn(`❌ LinkedIn NOT authenticated for session ${sessionId} - user needs to login`);
+      this.logger.warn(
+        `❌ LinkedIn NOT authenticated for session ${sessionId} - user needs to login`,
+      );
     }
-    
+
     return isLoggedIn;
   }
 
@@ -71,20 +79,66 @@ export class LinkedinConnectionService {
   async checkConnection(
     sessionId: SessionId,
     profileUrl: string,
-  ): Promise<boolean> {
-    // Check LinkedIn authentication status before proceeding
-    const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
-    if (!isAuthenticated) {
-      this.logger.warn(`Cannot check connection - user not logged into LinkedIn (session: ${sessionId})`);
-      return false;
-    }
-
-    const { base64, mimeType } = await this.captureProfileScreenshot(
-      sessionId,
+  ): Promise<any> {
+    const startTime = Date.now();
+    
+    const verboseResult = {
+      ok: true,
+      result: false,
       profileUrl,
-    );
+      sessionId,
+      executionDetails: {
+        startTime,
+        endTime: null as number | null,
+        executionTimeMs: null as number | null,
+        method: 'openai_vision_analysis',
+        fallbackAttempts: 0,
+        steps: [] as string[],
+        errors: [] as any[],
+        openaiDetails: {
+          model: 'gpt-5-nano',
+          prompt: null as string | null,
+          response: null as any,
+          outputText: null as string | null,
+          usage: null as any
+        }
+      },
+    };
 
-    const prompt = `
+    try {
+      verboseResult.executionDetails.steps.push('Starting checkConnection process');
+      
+      // Check LinkedIn authentication status before proceeding
+      verboseResult.executionDetails.steps.push('Checking LinkedIn authentication status');
+      const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
+      if (!isAuthenticated) {
+        verboseResult.executionDetails.steps.push('User not logged into LinkedIn - returning false');
+        this.logger.warn(
+          `Cannot check connection - user not logged into LinkedIn (session: ${sessionId})`,
+        );
+        
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.ok = false;
+        verboseResult.result = false;
+        verboseResult.executionDetails.errors.push({
+          message: 'User not authenticated',
+          timestamp: endTime
+        });
+        
+        return verboseResult;
+      }
+
+      verboseResult.executionDetails.steps.push('User authenticated, capturing profile screenshot');
+      const { base64, mimeType } = await this.captureProfileScreenshot(
+        sessionId,
+        profileUrl,
+      );
+      
+      verboseResult.executionDetails.steps.push(`Screenshot captured: ${mimeType}, size: ${base64.length} chars`);
+
+      const prompt = `
 Analizá esta captura del perfil de LinkedIn.
 
 Objetivo:
@@ -96,43 +150,91 @@ Reglas de salida:
 - false => NO están conectados o aparece un CTA que indica que hay que enviar solicitud.
 `;
 
-    const resp = await this.openai.chat.completions.create({
-      model: 'gpt-5-nano',
-      messages: [
-        {
-          role: 'system',
-          content:
-            'Sos un clasificador estricto. Respondés únicamente true o false.',
-        },
-        {
-          role: 'user',
-          content: [
-            { type: 'text', text: prompt },
-            {
-              type: 'image_url',
-              image_url: {
-                url: `data:${mimeType};base64,${base64}`,
+      verboseResult.executionDetails.openaiDetails.prompt = prompt;
+      verboseResult.executionDetails.steps.push('Sending request to OpenAI vision model');
+
+      const resp = await this.openai.chat.completions.create({
+        model: 'gpt-5-nano',
+        messages: [
+          {
+            role: 'system',
+            content:
+              'Sos un clasificador estricto. Respondés únicamente true o false.',
+          },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: prompt },
+              {
+                type: 'image_url',
+                image_url: {
+                  url: `data:${mimeType};base64,${base64}`,
+                },
               },
-            },
-          ],
-        },
-      ],
-    });
+            ],
+          },
+        ],
+      });
 
-    const out =
-      resp?.choices?.[0]?.message?.content?.trim().toLowerCase() ?? '';
+      verboseResult.executionDetails.openaiDetails.response = resp;
+      verboseResult.executionDetails.openaiDetails.usage = resp.usage;
+      
+      const out = resp?.choices?.[0]?.message?.content?.trim().toLowerCase() ?? '';
+      verboseResult.executionDetails.openaiDetails.outputText = out;
+      verboseResult.executionDetails.steps.push(`OpenAI response received: "${out}"`);
 
-    if (out === 'true') return true;
-    if (out === 'false') return false;
+      let finalResult = false;
+      
+      if (out === 'true') {
+        finalResult = true;
+        verboseResult.executionDetails.steps.push('Direct match: "true" - users are connected');
+      } else if (out === 'false') {
+        finalResult = false;
+        verboseResult.executionDetails.steps.push('Direct match: "false" - users not connected');
+      } else {
+        const hasTrue = /\btrue\b/i.test(out);
+        const hasFalse = /\bfalse\b/i.test(out);
 
-    const hasTrue = /\btrue\b/i.test(out);
-    const hasFalse = /\bfalse\b/i.test(out);
+        if (hasTrue && !hasFalse) {
+          finalResult = true;
+          verboseResult.executionDetails.steps.push('Regex match: found "true" in response - users are connected');
+        } else if (hasFalse && !hasTrue) {
+          finalResult = false;
+          verboseResult.executionDetails.steps.push('Regex match: found "false" in response - users not connected');
+        } else {
+          verboseResult.executionDetails.steps.push(`Unexpected model output: ${out} - defaulting to false`);
+          verboseResult.executionDetails.errors.push({
+            message: `Unexpected model output: ${out}`,
+            timestamp: Date.now()
+          });
+          this.logger.warn(`checkConnection: salida inesperada del modelo: ${out}`);
+          finalResult = false;
+        }
+      }
 
-    if (hasTrue && !hasFalse) return true;
-    if (hasFalse && !hasTrue) return false;
-
-    this.logger.warn(`checkConnection: salida inesperada del modelo: ${out}`);
-    return false;
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.result = finalResult;
+      verboseResult.executionDetails.steps.push(`Final result: ${finalResult}`);
+      
+      return verboseResult;
+      
+    } catch (e: any) {
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.ok = false;
+      verboseResult.result = false;
+      verboseResult.executionDetails.errors.push({
+        message: e?.message ?? 'Unknown error',
+        stack: e?.stack,
+        timestamp: endTime
+      });
+      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
+      
+      return verboseResult;
+    }
   }
 
   // ----------------------------
@@ -143,15 +245,61 @@ Reglas de salida:
     profileUrl: string,
     note?: string,
   ) {
-    // Check LinkedIn authentication status before proceeding
-    const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
-    if (!isAuthenticated) {
-      return {
-        ok: false,
-        error: 'User not logged into LinkedIn',
-        detail: 'Please login to LinkedIn first before attempting to send connections',
-      };
-    }
+    const startTime = Date.now();
+    
+    const verboseResult = {
+      ok: true,
+      profileUrl,
+      notePreview: (note ?? '').slice(0, 80),
+      noteLength: note?.length ?? 0,
+      sessionId,
+      executionDetails: {
+        startTime,
+        endTime: null as number | null,
+        executionTimeMs: null as number | null,
+        method: 'playwright_execution_with_fallbacks',
+        fallbackAttempts: 0,
+        methodsAttempted: [] as string[],
+        steps: [] as string[],
+        errors: [] as any[],
+        playwrightDetails: {
+          codeLength: null as number | null,
+          humanLikeDelays: true,
+          selectors: [] as string[]
+        }
+      },
+      note: null as string | null,
+      toolResult: null as any,
+    };
+
+    try {
+      verboseResult.executionDetails.steps.push('Starting sendConnection process');
+      
+      // Check LinkedIn authentication status before proceeding
+      verboseResult.executionDetails.steps.push('Checking LinkedIn authentication status');
+      const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
+      if (!isAuthenticated) {
+        verboseResult.executionDetails.steps.push('User not authenticated - returning error');
+        
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.executionDetails.errors.push({
+          message: 'User not logged into LinkedIn',
+          timestamp: endTime
+        });
+        
+        return {
+          ok: false,
+          error: 'User not logged into LinkedIn',
+          detail: 'Please login to LinkedIn first before attempting to send connections',
+          executionDetails: verboseResult.executionDetails,
+          profileUrl,
+          sessionId
+        };
+      }
+
+      verboseResult.executionDetails.steps.push('User authenticated, building Playwright execution code');
 
     // Direct Playwright execution
 
@@ -558,7 +706,16 @@ async (page) => {
 `;
 
     try {
+      verboseResult.executionDetails.playwrightDetails.codeLength = code.length;
+      verboseResult.executionDetails.steps.push(`Generated Playwright code: ${code.length} characters`);
+      verboseResult.executionDetails.steps.push('Executing Playwright code with human-like behavior');
+      
       const result = await this.playwright.runCode(code, sessionId);
+
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.steps.push('Playwright execution completed');
 
       this.logger.debug(
         'browser_run_code result (sendConnection popover): ' +
@@ -566,26 +723,67 @@ async (page) => {
       );
 
       if (result?.isError) {
+        verboseResult.executionDetails.errors.push({
+          message: 'Playwright MCP error',
+          detail: result?.content ?? result,
+          timestamp: endTime
+        });
+        verboseResult.executionDetails.steps.push(`Error in Playwright execution: ${result?.content ?? result}`);
+        
         return {
           ok: false,
           error: 'Playwright MCP error en browser_run_code',
           detail: result?.content ?? result,
+          executionDetails: verboseResult.executionDetails,
+          profileUrl,
+          sessionId
         };
       }
 
-      const connectionMethod = result?.viaDirect ? 'botón directo "Conectar"' : 'dropdown "Más acciones"';
-      const selectorInfo = result?.selector ? ` (selector: ${result.selector})` : '';
+      // Track which method was used
+      const connectionMethod = result?.viaDirect
+        ? 'botón directo "Conectar"'
+        : 'dropdown "Más acciones"';
+      const selectorInfo = result?.selector
+        ? ` (selector: ${result.selector})`
+        : '';
+
+      verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
+      verboseResult.executionDetails.steps.push(`Connection sent via: ${connectionMethod}${selectorInfo}`);
       
-      return {
-        ok: true,
-        profileUrl,
-        notePreview: (note ?? '').slice(0, 80),
-        note: `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`,
-        toolResult: result,
-      };
+      if (result?.viaDirect) {
+        verboseResult.executionDetails.playwrightDetails.selectors.push(result.selector || 'unknown');
+      }
+      
+      if (result?.noteAdded) {
+        verboseResult.executionDetails.steps.push(`Custom note added: ${note?.slice(0, 50)}...`);
+      }
+
+      verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
+      verboseResult.toolResult = result;
+
+      return verboseResult;
+      
     } catch (e: any) {
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.errors.push({
+        message: e?.message ?? 'Unknown error',
+        stack: e?.stack,
+        timestamp: endTime
+      });
+      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
+
       this.logger.warn(`sendConnection (popover) failed: ${e?.message ?? e}`);
-      return { ok: false, error: e?.message ?? 'Unknown error' };
+      
+      return { 
+        ok: false, 
+        error: e?.message ?? 'Unknown error',
+        executionDetails: verboseResult.executionDetails,
+        profileUrl,
+        sessionId
+      };
     }
   }
 }
