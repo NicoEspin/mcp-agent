@@ -322,9 +322,9 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
   private startKeepalive() {
     this.stopKeepalive(); // Clear any existing timer
-    
+
     const keepaliveInterval = Number(
-      this.config.get('PLAYWRIGHT_KEEPALIVE_INTERVAL') ?? 30000 // 30 seconds default
+      this.config.get('PLAYWRIGHT_KEEPALIVE_INTERVAL') ?? 30000, // 30 seconds default
     );
 
     this.keepaliveTimer = setInterval(async () => {
@@ -335,7 +335,9 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       }
     }, keepaliveInterval);
 
-    this.logger.log(`Browser keepalive started (interval: ${keepaliveInterval}ms)`);
+    this.logger.log(
+      `Browser keepalive started (interval: ${keepaliveInterval}ms)`,
+    );
   }
 
   private stopKeepalive() {
@@ -354,8 +356,10 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     const brokenSessions: SessionId[] = [];
     for (const [sessionId, session] of this.sessions.entries()) {
       const contextAlive = await this.isContextAlive(session.context);
-      const pageAlive = contextAlive ? await this.isPageAlive(session.page) : false;
-      
+      const pageAlive = contextAlive
+        ? await this.isPageAlive(session.page)
+        : false;
+
       if (!contextAlive || !pageAlive) {
         brokenSessions.push(sessionId);
       }
@@ -363,12 +367,16 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
     // Remove broken sessions
     for (const sessionId of brokenSessions) {
-      this.logger.debug(`Removing broken session during keepalive: ${sessionId}`);
+      this.logger.debug(
+        `Removing broken session during keepalive: ${sessionId}`,
+      );
       this.sessions.delete(sessionId);
     }
 
     if (brokenSessions.length > 0) {
-      this.logger.warn(`Cleaned up ${brokenSessions.length} broken sessions during keepalive`);
+      this.logger.warn(
+        `Cleaned up ${brokenSessions.length} broken sessions during keepalive`,
+      );
     }
   }
 
@@ -383,7 +391,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
           // Browser might already be closed
         }
         this.browser = null;
-        
+
         // Clear all sessions since browser context will be invalid
         this.sessions.clear();
       }
@@ -412,11 +420,15 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     // Check if existing session is still valid
     if (session) {
       const contextAlive = await this.isContextAlive(session.context);
-      const pageAlive = contextAlive ? await this.isPageAlive(session.page) : false;
-      
+      const pageAlive = contextAlive
+        ? await this.isPageAlive(session.page)
+        : false;
+
       if (!contextAlive || !pageAlive) {
-        this.logger.warn(`Session ${sessionId} detected as closed, recreating...`);
-        
+        this.logger.warn(
+          `Session ${sessionId} detected as closed, recreating...`,
+        );
+
         // Clean up the broken session
         try {
           if (pageAlive) await session.page.close();
@@ -424,24 +436,47 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
         } catch (e) {
           // Ignore cleanup errors
         }
-        
+
         // Remove the broken session
-      this.sessions.delete(sessionId);
+        this.sessions.delete(sessionId);
         session = undefined;
       }
     }
 
     if (!session) {
       // Create new browser context for this session
-      const context = await this.browser!.newContext({
-        viewport: this.getViewportSize(),
-        ignoreHTTPSErrors: true,
-        bypassCSP: true,
-        ...this.getContextFingerprint(),
-      });
+      let context: BrowserContext;
+      try {
+        context = await this.browser!.newContext({
+          viewport: this.getViewportSize(),
+          ignoreHTTPSErrors: true,
+          bypassCSP: true,
+          ...this.getContextFingerprint(),
+        });
+      } catch (error: any) {
+        const msg = error?.message?.toLowerCase?.() ?? '';
+        if (msg.includes('browser has been closed') || msg.includes('target page') || msg.includes('context or browser has been closed')) {
+          this.logger.warn(
+            `Browser appeared closed when creating context for ${sessionId}, reinitializing...`,
+          );
+          await this.initBrowser();
+          context = await this.browser!.newContext({
+            viewport: this.getViewportSize(),
+            ignoreHTTPSErrors: true,
+            bypassCSP: true,
+            ...this.getContextFingerprint(),
+          });
+        } else {
+          throw error;
+        }
+      }
 
       // Restore cookies for this session (especially LinkedIn authentication)
-      const cookiesRestored = await this.cookieManager.restoreCookies(sessionId, context, 'linkedin.com');
+      const cookiesRestored = await this.cookieManager.restoreCookies(
+        sessionId,
+        context,
+        'linkedin.com',
+      );
       if (cookiesRestored) {
         this.logger.log(`Cookies restored for session ${sessionId}`);
       }
@@ -521,59 +556,82 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
   ): Promise<void> {
     const session = await this.getSession(sessionId);
-    
+
     // Check login status before navigation
     const wasLoggedInBefore = await this.isLinkedInLoggedIn(sessionId);
-    this.logger.debug(`LinkedIn login status before navigation: ${wasLoggedInBefore} (session: ${sessionId})`);
-    
+    this.logger.debug(
+      `LinkedIn login status before navigation: ${wasLoggedInBefore} (session: ${sessionId})`,
+    );
+
     await session.page.goto(url, {
       waitUntil: 'domcontentloaded',
       timeout: this.getTimeoutNavigation(),
     });
-    
+
     // If navigating to LinkedIn, continuously monitor and save cookies
     if (url.includes('linkedin.com')) {
-      await this.monitorLinkedInCookies(sessionId, session.context, wasLoggedInBefore);
+      await this.monitorLinkedInCookies(
+        sessionId,
+        session.context,
+        wasLoggedInBefore,
+      );
     }
-    
+
     this.logger.debug(`Navigated to ${url} (session: ${sessionId})`);
   }
 
   /**
    * Continuously monitor LinkedIn cookies after navigation
    */
-  private async monitorLinkedInCookies(sessionId: SessionId, context: BrowserContext, wasLoggedInBefore: boolean): Promise<void> {
+  private async monitorLinkedInCookies(
+    sessionId: SessionId,
+    context: BrowserContext,
+    wasLoggedInBefore: boolean,
+  ): Promise<void> {
     try {
       // Multiple checkpoints to catch login state changes
       const checkpoints = [2000, 5000, 10000, 15000, 30000]; // 2s, 5s, 10s, 15s, 30s
-      
+
       for (const delay of checkpoints) {
         setTimeout(async () => {
           try {
             // Save cookies at each checkpoint
-            await this.cookieManager.saveCookies(sessionId, context, 'linkedin.com');
-            
+            await this.cookieManager.saveCookies(
+              sessionId,
+              context,
+              'linkedin.com',
+            );
+
             // Check if login status changed
             const isLoggedInNow = await this.isLinkedInLoggedIn(sessionId);
-            
+
             if (!wasLoggedInBefore && isLoggedInNow) {
-              const authToken = await this.cookieManager.getLinkedInAuthToken(sessionId);
-              this.logger.log(`🔐 LinkedIn login detected for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`);
+              const authToken =
+                await this.cookieManager.getLinkedInAuthToken(sessionId);
+              this.logger.log(
+                `🔐 LinkedIn login detected for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`,
+              );
             } else if (wasLoggedInBefore && !isLoggedInNow) {
-              this.logger.warn(`🚪 LinkedIn logout detected for session ${sessionId}`);
+              this.logger.warn(
+                `🚪 LinkedIn logout detected for session ${sessionId}`,
+              );
             }
-            
+
             // Log current status
-            this.logger.debug(`LinkedIn auth status check (${delay}ms): ${isLoggedInNow} (session: ${sessionId})`);
-            
+            this.logger.debug(
+              `LinkedIn auth status check (${delay}ms): ${isLoggedInNow} (session: ${sessionId})`,
+            );
           } catch (error) {
-            this.logger.warn(`Cookie monitoring failed at ${delay}ms for session ${sessionId}: ${error}`);
+            this.logger.warn(
+              `Cookie monitoring failed at ${delay}ms for session ${sessionId}: ${error}`,
+            );
           }
         }, delay);
       }
-      
     } catch (error) {
-      this.logger.warn(`Failed to start cookie monitoring for session ${sessionId}: ${error}`);
+      this.logger.warn(
+        `Failed to start cookie monitoring for session ${sessionId}: ${error}`,
+      );
     }
   }
 
@@ -581,12 +639,22 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
    * Save cookies after a delay to ensure they're set
    * @deprecated Use monitorLinkedInCookies instead
    */
-  private async saveCookiesAfterDelay(sessionId: SessionId, context: BrowserContext, delay: number = 2000): Promise<void> {
+  private async saveCookiesAfterDelay(
+    sessionId: SessionId,
+    context: BrowserContext,
+    delay: number = 2000,
+  ): Promise<void> {
     setTimeout(async () => {
       try {
-        await this.cookieManager.saveCookies(sessionId, context, 'linkedin.com');
+        await this.cookieManager.saveCookies(
+          sessionId,
+          context,
+          'linkedin.com',
+        );
       } catch (error) {
-        this.logger.warn(`Failed to save cookies for session ${sessionId}: ${error}`);
+        this.logger.warn(
+          `Failed to save cookies for session ${sessionId}: ${error}`,
+        );
       }
     }, delay);
   }
@@ -596,23 +664,26 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
   ): Promise<any> {
     const session = await this.getSession(sessionId);
-    
+
     // Check login status before code execution
     const wasLoggedInBefore = await this.isLinkedInLoggedIn(sessionId);
 
     let result;
     if (code.trim().startsWith('async (page)')) {
-      // eslint-disable-next-line no-eval
       const func = eval(`(${code})`);
       result = await func(session.page);
     } else {
       result = await session.page.evaluate(code);
     }
-    
+
     // Monitor cookies after code execution (especially for LinkedIn operations)
     const currentUrl = await session.page.url();
     if (currentUrl.includes('linkedin.com')) {
-      await this.monitorLinkedInCookies(sessionId, session.context, wasLoggedInBefore);
+      await this.monitorLinkedInCookies(
+        sessionId,
+        session.context,
+        wasLoggedInBefore,
+      );
     }
 
     return result;
@@ -795,27 +866,41 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   /**
    * Check if user is logged into LinkedIn (combines real-time and saved cookie checks)
    */
-  async isLinkedInLoggedIn(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<boolean> {
+  async isLinkedInLoggedIn(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<boolean> {
     try {
       const session = await this.getSession(sessionId);
-      
+
       // First check real-time cookies from browser context (most accurate)
-      const realTimeResult = await this.cookieManager.isLinkedInLoggedInRealTime(sessionId, session.context);
-      
+      const realTimeResult =
+        await this.cookieManager.isLinkedInLoggedInRealTime(
+          sessionId,
+          session.context,
+        );
+
       if (realTimeResult) {
         // If real-time check shows logged in, save the cookies immediately
-        await this.cookieManager.saveCookies(sessionId, session.context, 'linkedin.com');
+        await this.cookieManager.saveCookies(
+          sessionId,
+          session.context,
+          'linkedin.com',
+        );
         return true;
       }
 
       // Fallback to saved cookies check
-      const savedResult = await this.cookieManager.isLinkedInLoggedIn(sessionId);
-      
-      this.logger.debug(`LinkedIn login check for session ${sessionId}: real-time=${realTimeResult}, saved=${savedResult}`);
+      const savedResult =
+        await this.cookieManager.isLinkedInLoggedIn(sessionId);
+
+      this.logger.debug(
+        `LinkedIn login check for session ${sessionId}: real-time=${realTimeResult}, saved=${savedResult}`,
+      );
       return savedResult;
-      
     } catch (error) {
-      this.logger.warn(`Error checking LinkedIn login status for session ${sessionId}: ${error}`);
+      this.logger.warn(
+        `Error checking LinkedIn login status for session ${sessionId}: ${error}`,
+      );
       // Fallback to saved cookies only
       return this.cookieManager.isLinkedInLoggedIn(sessionId);
     }
@@ -824,7 +909,9 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   /**
    * Extract and save LinkedIn authentication token
    */
-  async extractLinkedInAuth(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<string | null> {
+  async extractLinkedInAuth(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<string | null> {
     const session = await this.getSession(sessionId);
     return this.cookieManager.extractLinkedInAuth(sessionId, session.page);
   }
@@ -832,14 +919,19 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   /**
    * Get stored LinkedIn authentication token
    */
-  async getLinkedInAuthToken(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<string | null> {
+  async getLinkedInAuthToken(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<string | null> {
     return this.cookieManager.getLinkedInAuthToken(sessionId);
   }
 
   /**
    * Save current session cookies
    */
-  async saveCookies(sessionId: SessionId = this.DEFAULT_SESSION_ID, domain: string = 'linkedin.com'): Promise<void> {
+  async saveCookies(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+    domain: string = 'linkedin.com',
+  ): Promise<void> {
     const session = await this.getSession(sessionId);
     return this.cookieManager.saveCookies(sessionId, session.context, domain);
   }
@@ -847,41 +939,63 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   /**
    * Clear saved cookies for a session
    */
-  async clearCookies(sessionId: SessionId = this.DEFAULT_SESSION_ID, domain: string = 'linkedin.com'): Promise<void> {
+  async clearCookies(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+    domain: string = 'linkedin.com',
+  ): Promise<void> {
     return this.cookieManager.clearCookies(sessionId, domain);
   }
 
   /**
    * List all sessions with saved cookies
    */
-  async listSavedSessions(): Promise<{ sessionId: string; domain: string; timestamp: number; hasLiAt: boolean }[]> {
+  async listSavedSessions(): Promise<
+    { sessionId: string; domain: string; timestamp: number; hasLiAt: boolean }[]
+  > {
     return this.cookieManager.listSavedSessions();
   }
 
   /**
    * Force immediate cookie check and save (useful for manual authentication detection)
    */
-  async forceCookieCheck(sessionId: SessionId = this.DEFAULT_SESSION_ID): Promise<{ isLoggedIn: boolean; authToken: string | null }> {
+  async forceCookieCheck(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<{ isLoggedIn: boolean; authToken: string | null }> {
     try {
       const session = await this.getSession(sessionId);
-      
-      // Force real-time check first 
-      const isLoggedIn = await this.cookieManager.isLinkedInLoggedInRealTime(sessionId, session.context);
-      
+
+      // Force real-time check first
+      const isLoggedIn = await this.cookieManager.isLinkedInLoggedInRealTime(
+        sessionId,
+        session.context,
+      );
+
       if (isLoggedIn) {
         // Force save cookies immediately if logged in
-        await this.cookieManager.saveCookies(sessionId, session.context, 'linkedin.com');
-        const authToken = await this.cookieManager.extractLinkedInAuth(sessionId, session.page);
-        
-        this.logger.log(`🔄 Force check - LinkedIn authenticated for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`);
+        await this.cookieManager.saveCookies(
+          sessionId,
+          session.context,
+          'linkedin.com',
+        );
+        const authToken = await this.cookieManager.extractLinkedInAuth(
+          sessionId,
+          session.page,
+        );
+
+        this.logger.log(
+          `🔄 Force check - LinkedIn authenticated for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`,
+        );
         return { isLoggedIn: true, authToken };
       } else {
-        this.logger.log(`🔄 Force check - LinkedIn NOT authenticated for session ${sessionId}`);
+        this.logger.log(
+          `🔄 Force check - LinkedIn NOT authenticated for session ${sessionId}`,
+        );
         return { isLoggedIn: false, authToken: null };
       }
-      
     } catch (error) {
-      this.logger.error(`Force cookie check failed for session ${sessionId}: ${error}`);
+      this.logger.error(
+        `Force cookie check failed for session ${sessionId}: ${error}`,
+      );
       return { isLoggedIn: false, authToken: null };
     }
   }
