@@ -189,15 +189,39 @@ No incluyas texto fuera del JSON.
       };
     }
 
-    // If cookie says logged in, trust it
+    // If cookie says logged in, optionally double-check with vision when forced (e.g., after an action failure)
     if (cookieCheck.ok && cookieCheck.isLoggedIn) {
-      this.lastChecks.set(sessionId, cookieCheck);
+      let finalCheck = cookieCheck;
+
+      if (force) {
+        const visionCheck = await this.runVisionFallback(sessionId);
+        // If vision disagrees or fails, prefer its outcome for safety
+        if (!visionCheck.ok || !visionCheck.isLoggedIn) {
+          finalCheck = {
+            ...visionCheck,
+            signals: ['vision_fallback_after_failure'].concat(
+              visionCheck.signals ?? [],
+            ),
+          };
+        } else {
+          finalCheck = {
+            ...visionCheck,
+            signals: ['vision_fallback_after_failure'].concat(
+              visionCheck.signals ?? [],
+            ),
+          };
+        }
+      }
+
+      this.lastChecks.set(sessionId, finalCheck);
+
       this.logger.log(
-        `LinkedIn session check [${sessionId}] -> logged=${cookieCheck.isLoggedIn} ` +
-          `conf=${cookieCheck.confidence ?? '?'} ` +
-          `signals=${(cookieCheck.signals ?? []).join(',')}`,
+        `LinkedIn session check [${sessionId}] -> logged=${finalCheck.isLoggedIn} ` +
+          `conf=${finalCheck.confidence ?? '?'} ` +
+          `signals=${(finalCheck.signals ?? []).join(',')}`,
       );
-      return cookieCheck;
+
+      return finalCheck;
     }
 
     // Fallback: visual validation via OpenAI if cookie check failed or says not logged in
