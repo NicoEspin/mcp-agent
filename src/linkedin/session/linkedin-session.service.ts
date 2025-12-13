@@ -163,132 +163,46 @@ No incluyas texto fuera del JSON.
       return prev;
     }
 
-    const apiKey = this.getOpenAIKey();
-    if (!apiKey) {
-      const fallback: LinkedinSessionCheck = {
-        ok: false,
-        isLoggedIn: false,
-        confidence: 0,
-        signals: ['missing_openai_key'],
-        reason: 'OPENAI_API_KEY no configurada',
+    try {
+      const isLoggedIn = await this.playwright.isLinkedInLoggedIn(sessionId);
+      const hasToken = isLoggedIn
+        ? await this.playwright.getLinkedInAuthToken(sessionId)
+        : null;
+
+      const check: LinkedinSessionCheck = {
+        ok: true,
+        isLoggedIn: Boolean(hasToken),
+        confidence: hasToken ? 1 : 0,
+        signals: [hasToken ? 'li_at_present' : 'li_at_missing'],
+        reason: hasToken
+          ? 'li_at cookie presente'
+          : 'li_at cookie no encontrada',
         checkedAt: Date.now(),
         sessionId,
       };
-      this.lastChecks.set(sessionId, fallback);
-      return fallback;
-    }
 
-    // ✅ Opcional: pre-navigate por sesión
-    if (this.preNavigateEnabled()) {
-      try {
-        await this.playwright.navigate(this.getPreNavigateUrl(), sessionId);
-        await new Promise((r) => setTimeout(r, 800));
-      } catch (e: any) {
-        this.logger.warn(
-          `Session pre-navigate failed [${sessionId}]: ${e?.message ?? e}`,
-        );
-      }
-    }
+      this.lastChecks.set(sessionId, check);
 
-    // ✅ Reusar frame reciente del stream para ESA sesión
-    const { data, mimeType } = await this.stream.getCachedScreenshotBase64(
-      sessionId,
-      800,
-    );
-    const dataUrl = `data:${mimeType};base64,${data}`;
+      this.logger.log(
+        `LinkedIn session check [${sessionId}] -> logged=${check.isLoggedIn} ` +
+          `conf=${check.confidence ?? '?'} ` +
+          `signals=${(check.signals ?? []).join(',')}`,
+      );
 
-    const body: any = {
-      model: this.getVisionModel(),
-      input: [
-        {
-          role: 'user',
-          content: [
-            { type: 'input_text', text: this.buildPrompt() },
-            { type: 'input_image', image_url: dataUrl, detail: 'low' },
-          ],
-        },
-      ],
-      text: {
-        format: this.buildTextFormat(),
-      },
-      max_output_tokens: 200,
-    };
-
-    let raw: any;
-    try {
-      const res = await fetch(`${this.getOpenAIBaseUrl()}/responses`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(body),
-      });
-
-      raw = await res.json();
-
-      if (!res.ok) {
-        const errCheck: LinkedinSessionCheck = {
-          ok: false,
-          isLoggedIn: false,
-          confidence: 0,
-          signals: ['openai_http_error'],
-          reason: raw?.error?.message ?? `OpenAI error ${res.status}`,
-          checkedAt: Date.now(),
-          imageMimeType: mimeType,
-          sessionId,
-        };
-        this.lastChecks.set(sessionId, errCheck);
-        return errCheck;
-      }
+      return check;
     } catch (e: any) {
       const errCheck: LinkedinSessionCheck = {
         ok: false,
         isLoggedIn: false,
         confidence: 0,
-        signals: ['openai_network_error'],
-        reason: e?.message ?? 'OpenAI network error',
+        signals: ['cookie_check_error'],
+        reason: e?.message ?? 'Error checking li_at cookie',
         checkedAt: Date.now(),
-        imageMimeType: mimeType,
         sessionId,
       };
       this.lastChecks.set(sessionId, errCheck);
       return errCheck;
     }
-
-    const text = this.extractAssistantText(raw);
-    const parsed = this.safeJsonParse(text);
-
-    const check: LinkedinSessionCheck = {
-      ok: true,
-      isLoggedIn: Boolean(parsed?.isLoggedIn),
-      confidence:
-        typeof parsed?.confidence === 'number' ? parsed.confidence : undefined,
-      signals: Array.isArray(parsed?.signals) ? parsed.signals : undefined,
-      reason: typeof parsed?.reason === 'string' ? parsed.reason : undefined,
-      checkedAt: Date.now(),
-      imageMimeType: mimeType,
-      sessionId,
-    };
-
-    if (this.strictMode() && !parsed) {
-      check.ok = false;
-      check.isLoggedIn = false;
-      check.confidence = 0;
-      check.signals = ['unparsable_model_output'];
-      check.reason =
-        'El modelo no devolvió JSON parseable para la validación de sesión';
-    }
-
-    this.lastChecks.set(sessionId, check);
-
-    this.logger.log(
-      `LinkedIn session check [${sessionId}] -> logged=${check.isLoggedIn} ` +
-        `conf=${check.confidence ?? '?'} ` +
-        `signals=${(check.signals ?? []).join(',')}`,
-    );
-
-    return check;
   }
 
   async assertLoggedIn(sessionId = 'default', force = false) {
