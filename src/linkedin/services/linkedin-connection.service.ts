@@ -184,13 +184,18 @@ async (page) => {
   const profileUrl = ${JSON.stringify(url)};
   const debug = (msg) => console.log('[check-connection]', msg, 'url=', page.url());
 
-  page.setDefaultTimeout(8000);
-  page.setDefaultNavigationTimeout(25000);
+  page.setDefaultTimeout(12000);
+  page.setDefaultNavigationTimeout(30000);
 
   await debug('Ir al perfil');
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
-  await page.waitForTimeout(900);
-  await debug('Perfil cargado');
+  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  
+  // Increased initial waiting time for page to fully load
+  await page.waitForTimeout(2500);
+  await debug('Perfil cargado - esperando estabilización');
+  
+  // Wait for LinkedIn's dynamic content to load
+  await page.waitForTimeout(3000);
 
   const main = page.locator('main').first();
 
@@ -200,10 +205,22 @@ async (page) => {
 
   const scope = (await topCard.count()) ? topCard : main;
 
+  // Enhanced candidate selectors with more fallbacks
   const candidates = [
-    // "Más acciones" (3 dots) típico del perfil
+    // Primary selectors from the example
+    scope.locator('button[aria-label="Más acciones"]').first(),
+    scope.locator('button[id*="ember"][id*="profile-overflow-action"]').first(),
+    scope.locator('button.artdeco-dropdown__trigger:has(span:text("Más"))').first(),
+    
+    // Original working selectors
     scope.locator('button[id$="-profile-overflow-action"].artdeco-dropdown__trigger').first(),
     scope.locator('button[aria-label*="Más acciones" i], button[aria-label*="More actions" i]').first(),
+
+    // Additional selectors based on the provided example
+    scope.locator('button.artdeco-dropdown__trigger.artdeco-button--secondary.artdeco-button--muted').first(),
+    scope.locator('button.artdeco-button--secondary:has(span:text("Más"))').first(),
+    scope.locator('button[aria-expanded="false"]:has(span:text("Más"))').first(),
+    scope.locator('button.ember-view:has(span:text("Más"))').first(),
 
     // Botón "Más" (texto "Más"/"More") que abre menú
     scope.locator(
@@ -211,66 +228,199 @@ async (page) => {
       'button[data-view-name="profile-overflow-button"][aria-label="More"]'
     ).first(),
 
-    // Fallback global
+    // More comprehensive text-based selectors
+    scope.locator('button:has-text("Más")').first(),
+    scope.locator('button >> text="Más"').first(),
+    
+    // Fallback global selectors
+    main.locator('button[aria-label="Más acciones"]').first(),
+    main.locator('button[id*="ember"][id*="profile-overflow-action"]').first(),
     main.locator('button[id$="-profile-overflow-action"].artdeco-dropdown__trigger').first(),
     main.locator('button[aria-label*="Más acciones" i], button[aria-label*="More actions" i]').first(),
+    main.locator('button.artdeco-dropdown__trigger.artdeco-button--secondary.artdeco-button--muted').first(),
     main.locator(
       'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
       'button[data-view-name="profile-overflow-button"][aria-label="More"]'
     ).first(),
+    main.locator('button:has-text("Más")').first(),
   ];
 
   let moreBtn = null;
   let used = null;
+  let retryCount = 0;
+  const maxRetries = 3;
 
-  for (let i = 0; i < candidates.length; i++) {
-    const btn = candidates[i];
-    const ok = await btn.isVisible().catch(() => false);
-    if (ok) {
-      moreBtn = btn;
-      used = i;
-      break;
+  // Retry logic with progressive delays
+  while (!moreBtn && retryCount < maxRetries) {
+    if (retryCount > 0) {
+      await debug(\`Intento \${retryCount + 1}/\${maxRetries} - esperando más tiempo\`);
+      await page.waitForTimeout(2000 + (retryCount * 1500)); // Progressive delay: 2s, 3.5s, 5s
+    }
+
+    for (let i = 0; i < candidates.length; i++) {
+      const btn = candidates[i];
+      const ok = await btn.isVisible().catch(() => false);
+      if (ok) {
+        // Double-check the button is actually clickable
+        const isEnabled = await btn.isEnabled().catch(() => false);
+        if (isEnabled) {
+          moreBtn = btn;
+          used = i;
+          await debug(\`Botón encontrado en intento \${retryCount + 1} con selector index \${i}\`);
+          break;
+        }
+      }
+    }
+    retryCount++;
+  }
+
+  if (!moreBtn) {
+    // Final fallback: wait longer and try one more time
+    await debug('Último intento - esperando 5 segundos más');
+    await page.waitForTimeout(5000);
+    
+    for (let i = 0; i < candidates.length; i++) {
+      const btn = candidates[i];
+      const ok = await btn.isVisible().catch(() => false);
+      if (ok) {
+        const isEnabled = await btn.isEnabled().catch(() => false);
+        if (isEnabled) {
+          moreBtn = btn;
+          used = i;
+          await debug(\`Botón encontrado en último intento con selector index \${i}\`);
+          break;
+        }
+      }
     }
   }
 
   if (!moreBtn) {
-    throw new Error('No se encontró botón "Más / Más acciones" en el perfil.');
+    throw new Error('No se encontró botón "Más / Más acciones" en el perfil después de múltiples intentos.');
   }
 
-  await debug('Click en overflow (Más/Más acciones)');
+  await debug(\`Click en overflow (Más/Más acciones) - usando selector \${used}\`);
   await moreBtn.scrollIntoViewIfNeeded().catch(() => {});
-  await moreBtn.click({ timeout: 8000, force: true });
-  await page.waitForTimeout(250);
+  
+  // Wait before clicking to ensure element is stable
+  await page.waitForTimeout(1000);
+  
+  await moreBtn.click({ timeout: 12000, force: true });
+  
+  // Increased wait for dropdown to appear
+  await page.waitForTimeout(1500);
 
-  // Preferimos artdeco-dropdown inner
+  // Enhanced dropdown waiting logic with multiple fallbacks
   const dropdownInner = page.locator('div.artdeco-dropdown__content-inner').last();
   const menuRole = page.locator('[role="menu"]').last();
+  const dropdownContent = page.locator('.artdeco-dropdown__content').last();
 
   let root = null;
+  let dropdownRetries = 0;
+  const maxDropdownRetries = 3;
 
-  try {
-    await dropdownInner.waitFor({ state: 'visible', timeout: 7000 });
-    root = dropdownInner;
-    await debug('Dropdown inner visible');
-  } catch {
-    await menuRole.waitFor({ state: 'visible', timeout: 7000 });
-    root = menuRole;
-    await debug('Role=menu visible');
+  while (!root && dropdownRetries < maxDropdownRetries) {
+    try {
+      if (dropdownRetries > 0) {
+        await debug(\`Dropdown intento \${dropdownRetries + 1}/\${maxDropdownRetries}\`);
+        await page.waitForTimeout(1000 + (dropdownRetries * 1000)); // Progressive delay
+      }
+
+      // Try multiple dropdown selectors
+      await dropdownInner.waitFor({ state: 'visible', timeout: 8000 });
+      root = dropdownInner;
+      await debug('Dropdown inner visible');
+      break;
+    } catch {
+      try {
+        await menuRole.waitFor({ state: 'visible', timeout: 8000 });
+        root = menuRole;
+        await debug('Role=menu visible');
+        break;
+      } catch {
+        try {
+          await dropdownContent.waitFor({ state: 'visible', timeout: 8000 });
+          root = dropdownContent;
+          await debug('Dropdown content visible');
+          break;
+        } catch {
+          await debug(\`Dropdown no visible en intento \${dropdownRetries + 1}\`);
+        }
+      }
+    }
+    dropdownRetries++;
   }
 
-  // Extraer items (mejor esfuerzo)
-  const itemsLoc = root.locator(
-    'div.artdeco-dropdown__item[role="button"], [role="menuitem"], button, a'
-  );
-  const textsRaw = await itemsLoc.allTextContents().catch(() => []);
-  const texts = (textsRaw || [])
-    .map((t) => (t || '').replace(/\\s+/g, ' ').trim())
-    .filter(Boolean)
-    .slice(0, 60);
+  if (!root) {
+    // Final fallback attempt
+    await debug('Último intento para dropdown - esperando 3 segundos más');
+    await page.waitForTimeout(3000);
+    
+    // Try any visible dropdown-like element
+    const anyDropdown = page.locator('.artdeco-dropdown, .dropdown, [role="menu"], [role="listbox"]').last();
+    const anyDropdownVisible = await anyDropdown.isVisible().catch(() => false);
+    
+    if (anyDropdownVisible) {
+      root = anyDropdown;
+      await debug('Fallback dropdown encontrado');
+    } else {
+      throw new Error('No se pudo abrir el dropdown de "Más acciones" después de múltiples intentos.');
+    }
+  }
+
+  // Enhanced menu item extraction with multiple selectors
+  const itemSelectors = [
+    'div.artdeco-dropdown__item[role="button"]',
+    '[role="menuitem"]',
+    'div.artdeco-dropdown__item',
+    '.dropdown-item',
+    'button',
+    'a',
+    '[data-test-dropdown-item]',
+    '.menu-item'
+  ];
+
+  let texts = [];
+  
+  // Try multiple extraction strategies
+  for (const selector of itemSelectors) {
+    try {
+      const itemsLoc = root.locator(selector);
+      const count = await itemsLoc.count();
+      if (count > 0) {
+        const textsRaw = await itemsLoc.allTextContents().catch(() => []);
+        texts = (textsRaw || [])
+          .map((t) => (t || '').replace(/\\s+/g, ' ').trim())
+          .filter(Boolean)
+          .slice(0, 60);
+        
+        if (texts.length > 0) {
+          await debug(\`Extraídos \${texts.length} items con selector: \${selector}\`);
+          break;
+        }
+      }
+    } catch (e) {
+      await debug(\`Error con selector \${selector}: \${e?.message || e}\`);
+    }
+  }
+
+  // If no items found, try to get any text content
+  if (texts.length === 0) {
+    try {
+      const allText = await root.textContent().catch(() => '');
+      if (allText && allText.trim()) {
+        texts = [allText.replace(/\\s+/g, ' ').trim()];
+        await debug('Fallback: extraído texto general del dropdown');
+      }
+    } catch (e) {
+      await debug(\`Error extrayendo texto general: \${e?.message || e}\`);
+    }
+  }
 
   return {
     ok: true,
     usedCandidateIndex: used,
+    retryAttempts: retryCount,
+    dropdownRetryAttempts: dropdownRetries,
     url: page.url(),
     menuItems: texts,
   };
