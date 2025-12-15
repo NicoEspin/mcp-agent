@@ -26,14 +26,16 @@ async function bootstrap() {
         typeof rule === 'string' ? rule === origin : rule.test(origin),
       );
 
-      return ok ? cb(null, true) : cb(new Error(`CORS blocked: ${origin}`), false);
+      return ok
+        ? cb(null, true)
+        : cb(new Error(`CORS blocked: ${origin}`), false);
     },
     credentials: true, // ✅ CLAVE si usás fetch(..., { credentials: 'include' })
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     optionsSuccessStatus: 204,
   });
-
+  app.enableShutdownHooks();
   await app.listen(process.env.PORT ?? 3001);
 }
 bootstrap();

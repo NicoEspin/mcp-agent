@@ -857,10 +857,42 @@
                 body: JSON.stringify({ sessionId, profileUrl })
             })
                 .then(res => res.json())
-                .then(connected => {
-                    const status = connected ? 'Connected' : 'Not connected';
-                    addLog(sessionId, `Connection status: ${status}`, connected ? 'info' : 'warning');
+                .then((data) => {
+                    // data = { ok, result:boolean, status:'connected'|'pending'|'not_connected'|'unknown', pending:boolean, ... }
+
+                    if (!data?.ok) {
+                        addLog(sessionId, `check-connection failed: ${data?.executionDetails?.errors?.[0]?.message || 'unknown error'}`, 'error');
+                        return;
+                    }
+
+                    const status = data.status || 'unknown';
+
+                    const label =
+                        status === 'connected' ? '✅ Connected' :
+                            status === 'pending' ? '🟠 Pending request' :
+                                status === 'not_connected' ? '❌ Not connected' :
+                                    '⚪ Unknown';
+
+                    const logType =
+                        status === 'connected' ? 'info' :
+                            status === 'pending' ? 'warning' :
+                                status === 'not_connected' ? 'warning' :
+                                    'warning';
+
+                    addLog(sessionId, `Connection status: ${label}`, logType);
+
+                    // Si querés ver señales / confidence rápido:
+                    const signals = data?.executionDetails?.openaiDetails?.parsed?.signals;
+                    const conf = data?.executionDetails?.openaiDetails?.parsed?.confidence;
+
+                    if (Array.isArray(signals) && signals.length) {
+                        addLog(sessionId, `Signals: ${signals.slice(0, 8).join(', ')}`, 'info');
+                    }
+                    if (typeof conf === 'number') {
+                        addLog(sessionId, `Confidence: ${Math.round(conf * 100)}%`, 'info');
+                    }
                 })
+
                 .catch(err => {
                     addLog(sessionId, `Failed to check connection: ${err.message}`, 'error');
                 });

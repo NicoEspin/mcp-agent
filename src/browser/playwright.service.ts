@@ -21,6 +21,7 @@ import type {
 import { CookieManagerService } from './cookie-manager.service';
 import * as path from 'path';
 import * as fs from 'fs';
+import { StorageStateService } from './storage-state.service';
 
 type SessionId = string;
 
@@ -46,6 +47,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly config: ConfigService,
     private readonly cookieManager: CookieManagerService,
+    private readonly storageState: StorageStateService,
   ) {}
 
   private normalizeButton(btn?: MouseButton): MouseButton {
@@ -186,6 +188,54 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     await session.page.keyboard.up(key);
   }
 
+  private async getLiAtFromContext(
+    context: BrowserContext,
+  ): Promise<string | null> {
+    try {
+      const all = await context.cookies();
+      const liAt = all.find(
+        (c) =>
+          c?.name === 'li_at' &&
+          String(c?.domain ?? '')
+            .toLowerCase()
+            .includes('linkedin.com'),
+      );
+      return liAt?.value ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private async getLiAtFromStateFile(
+    sessionId: SessionId,
+  ): Promise<string | null> {
+    try {
+      const p = this.storageState.getStatePath(sessionId);
+      if (!fs.existsSync(p)) return null;
+
+      const txt = await fs.promises.readFile(p, 'utf-8');
+      const state = JSON.parse(txt);
+      const cookies: any[] = Array.isArray(state?.cookies) ? state.cookies : [];
+
+      const liAt = cookies.find(
+        (c) =>
+          c?.name === 'li_at' &&
+          String(c?.domain ?? '')
+            .toLowerCase()
+            .includes('linkedin.com'),
+      );
+
+      return liAt?.value ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  private getStorageStateDir(): string {
+    // Truco: derive el dir desde un path “probe”
+    return path.dirname(this.storageState.getStatePath('__probe__'));
+  }
+
   async onModuleInit() {
     try {
       await this.initBrowser();
@@ -218,6 +268,21 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   async onModuleDestroy() {
     // Stop keepalive
     this.stopKeepalive();
+
+    // Best-effort: persist state for all alive sessions before closing
+    for (const [sessionId, session] of this.sessions.entries()) {
+      try {
+        const contextAlive = await this.isContextAlive(session.context);
+        if (contextAlive) {
+          await this.storageState.saveState(sessionId, session.context, {
+            requireLiAt: true,
+            minIntervalMs: 0, // forzar write al cerrar
+          });
+        }
+      } catch (e: any) {
+        this.logger.warn(`Error saving storageState for ${sessionId}: ${e}`);
+      }
+    }
 
     // Close all sessions
     for (const [sessionId, session] of this.sessions.entries()) {
@@ -328,26 +393,26 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
     for (const delay of checkpoints) {
       const t = setTimeout(async () => {
-        // Si ya arrancó otro monitor, este callback queda inválido
         if (this.cookieMonitorGen.get(sessionId) !== gen) return;
 
         try {
-          // 1) Chequeo REAL, sin leer archivos y sin spamear save
+          // 1) chequeo real-time (barato)
           const loggedIn = await this.cookieManager.isLinkedInLoggedInRealTime(
             sessionId,
             context,
           );
 
           if (loggedIn) {
-            // 2) Guardar UNA sola vez cuando aparece li_at, y cortar monitor
-            await this.cookieManager.saveCookies(
-              sessionId,
-              context,
-              'linkedin.com',
-            );
+            // 2) persistir storageState (no cookies.json)
+            await this.storageState.saveState(sessionId, context, {
+              requireLiAt: true,
+              minIntervalMs: 0, // acá conviene forzar para que quede escrito
+            });
+
             this.logger.log(
               `🔐 LinkedIn login detected for session ${sessionId} (monitor @${delay}ms)`,
             );
+
             this.stopLinkedInCookieMonitor(sessionId);
             return;
           }
@@ -356,13 +421,12 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
             `LinkedIn monitor (${delay}ms): still not logged (session: ${sessionId})`,
           );
 
-          // 3) Si fue el último checkpoint, cortamos el monitor sí o sí
           if (delay === checkpoints[checkpoints.length - 1]) {
             this.stopLinkedInCookieMonitor(sessionId);
           }
         } catch (error) {
           this.logger.warn(
-            `LinkedIn cookie monitor failed at ${delay}ms for session ${sessionId}: ${error}`,
+            `LinkedIn monitor failed at ${delay}ms for session ${sessionId}: ${error}`,
           );
           if (delay === checkpoints[checkpoints.length - 1]) {
             this.stopLinkedInCookieMonitor(sessionId);
@@ -423,11 +487,10 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   }
 
   private async performKeepalive() {
-    // Check if browser is alive and reinitialize if needed
     await this.ensureBrowser();
 
-    // Clean up any broken sessions
     const brokenSessions: SessionId[] = [];
+
     for (const [sessionId, session] of this.sessions.entries()) {
       const contextAlive = await this.isContextAlive(session.context);
       const pageAlive = contextAlive
@@ -436,6 +499,27 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
       if (!contextAlive || !pageAlive) {
         brokenSessions.push(sessionId);
+        continue;
+      }
+
+      // ✅ persistencia periódica si está en LinkedIn y ya hay li_at
+      try {
+        const url = session.page.url();
+        if (url.includes('linkedin.com')) {
+          const logged = await this.cookieManager.isLinkedInLoggedInRealTime(
+            sessionId,
+            session.context,
+          );
+
+          if (logged) {
+            await this.storageState.saveState(sessionId, session.context, {
+              requireLiAt: true,
+              // deja el throttle por config, no hace falta 0 acá
+            });
+          }
+        }
+      } catch (e) {
+        this.logger.debug(`Keepalive persist skipped for ${sessionId}: ${e}`);
       }
     }
 
@@ -503,30 +587,37 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
           `Session ${sessionId} detected as closed, recreating...`,
         );
 
-        // Clean up the broken session
         try {
           if (pageAlive) await session.page.close();
           if (contextAlive) await session.context.close();
-        } catch (e) {
-          // Ignore cleanup errors
-        }
+        } catch {}
 
-        // Remove the broken session
         this.sessions.delete(sessionId);
         session = undefined;
       }
     }
 
     if (!session) {
-      // Create new browser context for this session
       let context: BrowserContext;
+
+      // ✅ storageState restore
+      const hasValidState = this.storageState.ensureValidStateFile(sessionId);
+      const statePath = this.storageState.getStatePath(sessionId);
+
+      const ctxOptions: any = {
+        viewport: this.getViewportSize(),
+        ignoreHTTPSErrors: true,
+        bypassCSP: true,
+        ...this.getContextFingerprint(),
+      };
+
+      if (hasValidState) {
+        ctxOptions.storageState = statePath;
+        this.logger.log(`♻️ Restoring storageState for session ${sessionId}`);
+      }
+
       try {
-        context = await this.browser!.newContext({
-          viewport: this.getViewportSize(),
-          ignoreHTTPSErrors: true,
-          bypassCSP: true,
-          ...this.getContextFingerprint(),
-        });
+        context = await this.browser!.newContext(ctxOptions);
       } catch (error: any) {
         const msg = error?.message?.toLowerCase?.() ?? '';
         if (
@@ -538,34 +629,17 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
             `Browser appeared closed when creating context for ${sessionId}, reinitializing...`,
           );
           await this.initBrowser();
-          context = await this.browser!.newContext({
-            viewport: this.getViewportSize(),
-            ignoreHTTPSErrors: true,
-            bypassCSP: true,
-            ...this.getContextFingerprint(),
-          });
+          context = await this.browser!.newContext(ctxOptions);
         } else {
           throw error;
         }
       }
 
-      // Restore cookies for this session (especially LinkedIn authentication)
-      const cookiesRestored = await this.cookieManager.restoreCookies(
-        sessionId,
-        context,
-        'linkedin.com',
-      );
-      if (cookiesRestored) {
-        this.logger.log(`Cookies restored for session ${sessionId}`);
-      }
-
       // Block service workers if configured
       if (this.config.get<string>('PLAYWRIGHT_BLOCK_SW') === 'true') {
         await context.route('**/*', (route) => {
-          if (
-            route.request().url().includes('sw.js') ||
-            route.request().url().includes('service-worker')
-          ) {
+          const u = route.request().url();
+          if (u.includes('sw.js') || u.includes('service-worker')) {
             route.abort();
           } else {
             route.continue();
@@ -575,7 +649,6 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
       const page = await context.newPage();
 
-      // Set up page timeouts
       page.setDefaultTimeout(this.getTimeoutAction());
       page.setDefaultNavigationTimeout(this.getTimeoutNavigation());
 
@@ -663,25 +736,20 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     wasLoggedInBefore: boolean,
   ): Promise<void> {
     try {
-      // Multiple checkpoints to catch login state changes
-      const checkpoints = [2000, 5000, 10000, 15000, 30000]; // 2s, 5s, 10s, 15s, 30s
+      const checkpoints = [2000, 5000, 10000, 15000, 30000];
 
       for (const delay of checkpoints) {
         setTimeout(async () => {
           try {
-            // Save cookies at each checkpoint
-            await this.cookieManager.saveCookies(
-              sessionId,
-              context,
-              'linkedin.com',
-            );
+            // ✅ persistir state (no cookies)
+            await this.storageState.saveState(sessionId, context, {
+              requireLiAt: false,
+            });
 
-            // Check if login status changed
             const isLoggedInNow = await this.isLinkedInLoggedIn(sessionId);
 
             if (!wasLoggedInBefore && isLoggedInNow) {
-              const authToken =
-                await this.cookieManager.getLinkedInAuthToken(sessionId);
+              const authToken = await this.getLinkedInAuthToken(sessionId);
               this.logger.log(
                 `🔐 LinkedIn login detected for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`,
               );
@@ -691,7 +759,6 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
               );
             }
 
-            // Log current status
             this.logger.debug(
               `LinkedIn auth status check (${delay}ms): ${isLoggedInNow} (session: ${sessionId})`,
             );
@@ -720,14 +787,12 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   ): Promise<void> {
     setTimeout(async () => {
       try {
-        await this.cookieManager.saveCookies(
-          sessionId,
-          context,
-          'linkedin.com',
-        );
+        await this.storageState.saveState(sessionId, context, {
+          requireLiAt: false,
+        });
       } catch (error) {
         this.logger.warn(
-          `Failed to save cookies for session ${sessionId}: ${error}`,
+          `Failed to save storageState for session ${sessionId}: ${error}`,
         );
       }
     }, delay);
@@ -815,6 +880,12 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     }
 
     try {
+      // ✅ persist before closing
+      await this.storageState.saveState(sessionId, session.context, {
+        requireLiAt: true,
+        minIntervalMs: 0,
+      });
+
       await session.page.close();
       await session.context.close();
       this.sessions.delete(sessionId);
@@ -942,7 +1013,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     try {
       const session = await this.getSession(sessionId);
 
-      // First check real-time cookies from browser context (most accurate)
+      // 1) real-time (source of truth)
       const realTimeResult =
         await this.cookieManager.isLinkedInLoggedInRealTime(
           sessionId,
@@ -950,29 +1021,25 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
         );
 
       if (realTimeResult) {
-        // If real-time check shows logged in, save the cookies immediately
-        await this.cookieManager.saveCookies(
-          sessionId,
-          session.context,
-          'linkedin.com',
-        );
+        // ✅ persist storageState (no cookies.json)
+        await this.storageState.saveState(sessionId, session.context, {
+          requireLiAt: true,
+        });
         return true;
       }
 
-      // Fallback to saved cookies check
-      const savedResult =
-        await this.cookieManager.isLinkedInLoggedIn(sessionId);
+      // 2) fallback: leer storageState en disco
+      const savedResult = await this.storageState.hasLiAtInStateFile(sessionId);
 
       this.logger.debug(
-        `LinkedIn login check for session ${sessionId}: real-time=${realTimeResult}, saved=${savedResult}`,
+        `LinkedIn login check for session ${sessionId}: real-time=${realTimeResult}, savedState=${savedResult}`,
       );
       return savedResult;
     } catch (error) {
       this.logger.warn(
         `Error checking LinkedIn login status for session ${sessionId}: ${error}`,
       );
-      // Fallback to saved cookies only
-      return this.cookieManager.isLinkedInLoggedIn(sessionId);
+      return this.storageState.hasLiAtInStateFile(sessionId);
     }
   }
 
@@ -983,7 +1050,16 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
   ): Promise<string | null> {
     const session = await this.getSession(sessionId);
-    return this.cookieManager.extractLinkedInAuth(sessionId, session.page);
+
+    const liAt = await this.getLiAtFromContext(session.context);
+    if (!liAt) return null;
+
+    await this.storageState.saveState(sessionId, session.context, {
+      requireLiAt: true,
+      minIntervalMs: 0,
+    });
+
+    return liAt;
   }
 
   /**
@@ -992,7 +1068,19 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   async getLinkedInAuthToken(
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
   ): Promise<string | null> {
-    return this.cookieManager.getLinkedInAuthToken(sessionId);
+    try {
+      // Si hay sesión viva, lo sacamos del context (más confiable)
+      if (this.sessions.has(sessionId)) {
+        const s = await this.getSession(sessionId);
+        const liAt = await this.getLiAtFromContext(s.context);
+        if (liAt) return liAt;
+      }
+
+      // Fallback al storageState en disco
+      return await this.getLiAtFromStateFile(sessionId);
+    } catch {
+      return await this.getLiAtFromStateFile(sessionId);
+    }
   }
 
   /**
@@ -1003,9 +1091,13 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     domain: string = 'linkedin.com',
   ): Promise<void> {
     const session = await this.getSession(sessionId);
-    return this.cookieManager.saveCookies(sessionId, session.context, domain);
-  }
 
+    const requireLiAt = domain.includes('linkedin.com');
+    await this.storageState.saveState(sessionId, session.context, {
+      requireLiAt,
+      minIntervalMs: 0,
+    });
+  }
   /**
    * Clear saved cookies for a session
    */
@@ -1013,7 +1105,13 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
     domain: string = 'linkedin.com',
   ): Promise<void> {
-    return this.cookieManager.clearCookies(sessionId, domain);
+    // ✅ nuevo: storageState
+    await this.storageState.clearState(sessionId);
+
+    // (opcional) limpiar legacy cookie files si todavía existen en tu proyecto
+    try {
+      await this.cookieManager.clearCookies(sessionId, domain);
+    } catch {}
   }
 
   /**
@@ -1022,7 +1120,39 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   async listSavedSessions(): Promise<
     { sessionId: string; domain: string; timestamp: number; hasLiAt: boolean }[]
   > {
-    return this.cookieManager.listSavedSessions();
+    try {
+      const dir = this.getStorageStateDir();
+      const files = await fs.promises.readdir(dir);
+
+      const stateFiles = files.filter((f) => f.endsWith('.storage.json'));
+
+      const out: {
+        sessionId: string;
+        domain: string;
+        timestamp: number;
+        hasLiAt: boolean;
+      }[] = [];
+
+      for (const f of stateFiles) {
+        const full = path.join(dir, f);
+        const stat = await fs.promises.stat(full);
+        const sessionId = f.replace(/\.storage\.json$/, '');
+
+        const hasLiAt = await this.storageState.hasLiAtInStateFile(sessionId);
+
+        out.push({
+          sessionId,
+          domain: 'linkedin.com',
+          timestamp: stat.mtimeMs,
+          hasLiAt,
+        });
+      }
+
+      return out.sort((a, b) => b.timestamp - a.timestamp);
+    } catch (e) {
+      this.logger.warn(`Error listing storageStates: ${e}`);
+      return [];
+    }
   }
 
   /**
@@ -1034,34 +1164,29 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     try {
       const session = await this.getSession(sessionId);
 
-      // Force real-time check first
       const isLoggedIn = await this.cookieManager.isLinkedInLoggedInRealTime(
         sessionId,
         session.context,
       );
 
       if (isLoggedIn) {
-        // Force save cookies immediately if logged in
-        await this.cookieManager.saveCookies(
-          sessionId,
-          session.context,
-          'linkedin.com',
-        );
-        const authToken = await this.cookieManager.extractLinkedInAuth(
-          sessionId,
-          session.page,
-        );
+        await this.storageState.saveState(sessionId, session.context, {
+          requireLiAt: true,
+          minIntervalMs: 0,
+        });
+
+        const authToken = await this.getLiAtFromContext(session.context);
 
         this.logger.log(
           `🔄 Force check - LinkedIn authenticated for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`,
         );
         return { isLoggedIn: true, authToken };
-      } else {
-        this.logger.log(
-          `🔄 Force check - LinkedIn NOT authenticated for session ${sessionId}`,
-        );
-        return { isLoggedIn: false, authToken: null };
       }
+
+      this.logger.log(
+        `🔄 Force check - LinkedIn NOT authenticated for session ${sessionId}`,
+      );
+      return { isLoggedIn: false, authToken: null };
     } catch (error) {
       this.logger.error(
         `Force cookie check failed for session ${sessionId}: ${error}`,
