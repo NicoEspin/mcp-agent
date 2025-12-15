@@ -543,7 +543,6 @@ Notas:
 
       const resp = await this.openai.chat.completions.create({
         model: 'gpt-5-nano',
-        temperature: 0,
         messages: [
           {
             role: 'system',
