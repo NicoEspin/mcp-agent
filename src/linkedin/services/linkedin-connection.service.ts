@@ -785,4 +785,26 @@ async (page) => {
         sessionId
       };
     }
+    } catch (e: any) {
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.errors.push({
+        message: e?.message ?? 'Unknown error',
+        stack: e?.stack,
+        timestamp: endTime
+      });
+      verboseResult.executionDetails.steps.push(`Outer error: ${e?.message ?? 'Unknown error'}`);
+
+      this.logger.warn(`sendConnection failed: ${e?.message ?? e}`);
+      
+      return { 
+        ok: false, 
+        error: e?.message ?? 'Unknown error',
+        executionDetails: verboseResult.executionDetails,
+        profileUrl,
+        sessionId
+      };
+    }
   }
+}
