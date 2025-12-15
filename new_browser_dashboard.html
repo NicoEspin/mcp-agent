@@ -1,658 +1,791 @@
 <!DOCTYPE html>
 <html lang="es">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Panel de Sesión del Navegador</title>
-    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
-    <script src="https://cdn.tailwindcss.com"></script>
-  </head>
-  <body class="min-h-screen bg-slate-950 text-slate-50">
-    <div class="max-w-6xl mx-auto px-4 py-8 space-y-6">
-      <header class="flex items-center justify-between gap-4">
-        <div>
-          <p class="text-sm text-slate-400">Sesión activa</p>
-          <h1 class="text-2xl font-semibold" id="sessionLabel">...</h1>
-        </div>
-        <div class="flex items-center gap-2">
-          <span
-            id="connectionBadge"
-            class="inline-flex items-center gap-2 rounded-full bg-slate-800 px-3 py-1 text-sm"
-          >
-            <span
-              class="size-2.5 rounded-full bg-amber-400 animate-pulse"
-            ></span>
-            <span id="connectionText">Conectando…</span>
-          </span>
-          <button
-            id="startBtn"
-            class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-indigo-400 transition"
-          >
-            Iniciar sesión
-          </button>
-          <button
-            id="stopBtn"
-            class="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-700 transition"
-          >
-            Detener
-          </button>
-        </div>
-      </header>
 
-      <div class="grid gap-6 lg:grid-cols-3">
-        <section
-          class="lg:col-span-2 rounded-2xl bg-slate-900/70 border border-slate-800 shadow-xl overflow-hidden"
-        >
-          <div
-            class="flex items-center justify-between px-5 py-4 border-b border-slate-800"
-          >
-            <div>
-              <p class="text-sm text-slate-400">Visor en vivo</p>
-              <p class="text-lg font-semibold">LinkedIn</p>
-            </div>
-            <div
-              id="fpsBadge"
-              class="hidden rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-200"
-            >
-              0 FPS
-            </div>
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Panel de Sesión del Navegador</title>
+  <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+
+<body class="min-h-screen bg-slate-950 text-slate-50">
+  <div class="mx-auto max-w-6xl space-y-6 px-4 py-8">
+    <header class="flex items-center justify-between gap-4">
+      <div>
+        <p class="text-sm text-slate-400">Sesión activa</p>
+        <h1 class="text-2xl font-semibold" id="sessionLabel">...</h1>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <span id="connectionBadge" class="inline-flex items-center gap-2 rounded-full bg-slate-800 px-3 py-1 text-sm">
+          <span id="connectionDot" class="size-2.5 animate-pulse rounded-full bg-amber-400"></span>
+          <span id="connectionText">Conectando…</span>
+        </span>
+
+        <button id="startBtn"
+          class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white shadow-sm transition hover:bg-indigo-400">
+          Iniciar sesión
+        </button>
+
+        <button id="stopBtn"
+          class="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-700">
+          Detener
+        </button>
+      </div>
+    </header>
+
+    <div class="grid gap-6 lg:grid-cols-3">
+      <section class="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900/70 shadow-xl lg:col-span-2">
+        <div class="flex items-center justify-between border-b border-slate-800 px-5 py-4">
+          <div>
+            <p class="text-sm text-slate-400">Visor en vivo</p>
+            <p class="text-lg font-semibold">LinkedIn</p>
+          </div>
+          <div id="fpsBadge" class="hidden rounded-full bg-slate-800 px-3 py-1 text-xs text-slate-200">
+            0 FPS
+          </div>
+        </div>
+
+        <div class="relative bg-slate-950">
+          <div id="placeholder" class="flex h-[480px] items-center justify-center text-sm text-slate-500">
+            Pulsa “Iniciar sesión” para comenzar
           </div>
 
-          <div class="relative bg-slate-950">
-            <div
-              id="placeholder"
-              class="flex h-[480px] items-center justify-center text-slate-500 text-sm"
-            >
-              Pulsa “Iniciar sesión” para comenzar
-            </div>
-            <div id="stage" class="hidden relative">
-              <img
-                id="screenImg"
-                class="w-full select-none"
-                alt="Pantalla remota"
-                draggable="false"
-              />
-              <div
-                id="overlay"
-                class="absolute inset-0 outline-none"
-                tabindex="0"
-                title="Click para enfocar, escribe y navega con el mouse"
-              ></div>
-              <div
-                class="absolute bottom-4 left-4 rounded-lg bg-slate-900/80 px-3 py-2 text-xs text-slate-100"
-              >
-                Click para enfocar • escribe y usa el scroll
-              </div>
+          <div id="stage" class="relative hidden">
+            <img id="screenImg" class="w-full select-none" alt="Pantalla remota" draggable="false" />
+
+            <div id="overlay" class="absolute inset-0 outline-none" tabindex="0"
+              title="Click para enfocar, escribe y navega con el mouse"></div>
+
+            <div class="absolute bottom-4 left-4 rounded-lg bg-slate-900/80 px-3 py-2 text-xs text-slate-100">
+              Click para enfocar • escribe y usa el scroll
             </div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        <section
-          class="rounded-2xl bg-slate-900/70 border border-slate-800 shadow-xl p-5 space-y-4"
-        >
-          <div class="flex items-center justify-between">
-            <div>
-              <p class="text-sm text-slate-400">Estado</p>
-              <p class="text-lg font-semibold" id="statusLabel">Sin iniciar</p>
-            </div>
+      <section class="space-y-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-5 shadow-xl">
+        <div class="flex items-center justify-between">
+          <div>
+            <p class="text-sm text-slate-400">Estado</p>
+            <p class="text-lg font-semibold" id="statusLabel">Sin iniciar</p>
+          </div>
+
+          <button id="checkBtn"
+            class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-700">
+            Verificar sesión
+          </button>
+        </div>
+
+        <div class="space-y-3">
+          <div>
+            <label class="text-sm font-medium text-slate-200" for="profileUrl">URL de perfil</label>
+            <input id="profileUrl" type="text" placeholder="https://www.linkedin.com/in/usuario"
+              class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500" />
+          </div>
+
+          <div class="grid grid-cols-2 gap-2">
             <button
-              id="checkBtn"
-              class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-700 transition"
-            >
-              Verificar sesión
+              class="rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow transition hover:bg-indigo-400"
+              type="button" onclick="openTaskModal('send-message')">
+              Enviar mensaje
+            </button>
+
+            <button
+              class="rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow transition hover:bg-indigo-400"
+              type="button" onclick="openTaskModal('send-connection')">
+              Enviar conexión
+            </button>
+
+            <button
+              class="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow transition hover:bg-emerald-400"
+              type="button" onclick="checkConnection()">
+              Verificar conexión
+            </button>
+
+            <button
+              class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-700"
+              type="button" onclick="openTaskModal('read-chat')">
+              Leer chat
             </button>
           </div>
+        </div>
 
-          <div class="space-y-3">
-            <div>
-              <label
-                class="text-sm font-medium text-slate-200"
-                for="profileUrl"
-                >URL de perfil</label
-              >
-              <input
-                id="profileUrl"
-                type="text"
-                placeholder="https://www.linkedin.com/in/usuario"
-                class="mt-1 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
-              />
-            </div>
-
-            <div class="grid grid-cols-2 gap-2">
-              <button
-                class="rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-400 transition"
-                onclick="openTaskModal('send-message')"
-              >
-                Enviar mensaje
-              </button>
-              <button
-                class="rounded-lg bg-indigo-500 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-indigo-400 transition"
-                onclick="openTaskModal('send-connection')"
-              >
-                Enviar conexión
-              </button>
-              <button
-                class="rounded-lg bg-emerald-500 px-3 py-2 text-sm font-semibold text-white shadow hover:bg-emerald-400 transition"
-                onclick="checkConnection()"
-              >
-                Verificar conexión
-              </button>
-              <button
-                class="rounded-lg bg-slate-800 px-3 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-700 transition"
-                onclick="openTaskModal('read-chat')"
-              >
-                Leer chat
-              </button>
-            </div>
+        <div>
+          <p class="mb-2 text-sm font-medium text-slate-200">Actividad</p>
+          <div id="logPanel"
+            class="h-48 space-y-2 overflow-y-auto rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-200">
           </div>
+        </div>
+      </section>
+    </div>
+  </div>
 
-          <div>
-            <p class="text-sm font-medium text-slate-200 mb-2">Actividad</p>
-            <div
-              id="logPanel"
-              class="h-48 overflow-y-auto space-y-2 rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-200"
-            ></div>
-          </div>
-        </section>
+  <!-- Modal -->
+  <div id="taskModal" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+    <div class="w-full max-w-lg rounded-2xl border border-slate-800 bg-slate-900 p-6 shadow-2xl">
+      <div class="mb-4 flex items-center justify-between">
+        <h3 class="text-lg font-semibold" id="modalTitle">Acción</h3>
+        <button class="text-slate-400 transition hover:text-slate-200" type="button" onclick="closeModal()"
+          aria-label="Cerrar">
+          ✕
+        </button>
+      </div>
+
+      <div id="modalBody" class="space-y-3"></div>
+
+      <div class="mt-5 flex justify-end gap-2">
+        <button
+          class="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-100 transition hover:bg-slate-700"
+          type="button" onclick="closeModal()">
+          Cancelar
+        </button>
+
+        <button
+          class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white transition hover:bg-indigo-400"
+          type="button" onclick="executeTask()">
+          Ejecutar
+        </button>
       </div>
     </div>
+  </div>
 
-    <!-- Modal -->
-    <div
-      id="taskModal"
-      class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm items-center justify-center"
-    >
-      <div class="w-full max-w-lg rounded-2xl bg-slate-900 border border-slate-800 p-6 shadow-2xl">
-        <div class="flex items-center justify-between mb-4">
-          <h3 class="text-lg font-semibold" id="modalTitle">Acción</h3>
-          <button
-            class="text-slate-400 hover:text-slate-200"
-            onclick="closeModal()"
-          >
-            ✕
-          </button>
-        </div>
-        <div id="modalBody" class="space-y-3"></div>
-        <div class="mt-5 flex justify-end gap-2">
-          <button
-            class="rounded-lg bg-slate-800 px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-slate-700 transition"
-            onclick="closeModal()"
-          >
-            Cancelar
-          </button>
-          <button
-            class="rounded-lg bg-indigo-500 px-4 py-2 text-sm font-semibold text-white hover:bg-indigo-400 transition"
-            onclick="executeTask()"
-          >
-            Ejecutar
-          </button>
-        </div>
-      </div>
-    </div>
+  <script>
+    // ----- Utilidades y estado -----
+    const sessionId = deriveSessionId();
+    const baseUrl = detectBaseUrl();
+    const state = { socket: null, lastFrame: null, status: 'unknown' };
+    let currentTask = null;
 
-    <script>
-      // ----- Utilidades y estado -----
-      const sessionId = deriveSessionId();
-      const baseUrl = detectBaseUrl();
-      const state = { socket: null, lastFrame: null, status: 'unknown' };
-      let currentTask = null;
+    document.getElementById('sessionLabel').textContent = sessionId;
 
-      document.getElementById('sessionLabel').textContent = sessionId;
+    function deriveSessionId() {
+      // Busca /zion/<sessionId> en la URL (ej: /zion/default)
+      const match = window.location.pathname.match(/zion\/([^/]+)/);
+      return match ? match[1] : 'default';
+    }
 
-      function deriveSessionId() {
-        const match = window.location.pathname.match(/zion\\/([^/]+)/);
-        return match ? match[1] : 'default';
+    function detectBaseUrl() {
+      const origin = window.location.origin;
+
+      // Si estás corriendo el HTML en Live Server (5500), apuntá al backend real
+      if (origin.includes('127.0.0.1:5500') || origin.includes('localhost:5500')) {
+        return 'http://localhost:3001'; // <-- poné el puerto real de tu Nest
       }
 
-      function detectBaseUrl() {
-        const origin = window.location.origin;
-        if (origin === 'null' || origin.startsWith('file://')) {
-          return 'http://localhost:3001';
+      // file://
+      if (origin === 'null') return 'http://localhost:3001';
+
+      return origin;
+    }
+
+
+    function setConnectionStatus(text, colorClass) {
+      const dot = document.getElementById('connectionDot');
+      document.getElementById('connectionText').textContent = text;
+      dot.className = `size-2.5 rounded-full ${colorClass}`;
+    }
+
+    function log(message, type = 'info') {
+      const panel = document.getElementById('logPanel');
+      const line = document.createElement('div');
+      const palette = {
+        info: 'text-slate-200',
+        warning: 'text-amber-300',
+        error: 'text-rose-300',
+        success: 'text-emerald-300',
+      };
+      line.className = `flex gap-2 ${palette[type] || palette.info}`;
+      line.innerHTML =
+        `<span class="text-slate-500">${new Date().toLocaleTimeString()}</span>` +
+        `<span>${escapeHtml(String(message))}</span>`;
+      panel.appendChild(line);
+      panel.scrollTop = panel.scrollHeight;
+    }
+
+    function escapeHtml(str) {
+      return str
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function escapeAttr(str) {
+      // Para valores dentro de value="..."
+      return escapeHtml(str);
+    }
+
+    // ----- Sesión y streaming -----
+    async function startSession() {
+      log('Iniciando sesión...', 'info');
+      document.getElementById('statusLabel').textContent = 'Inicializando…';
+
+      try {
+        const res = await httpPost(`${baseUrl}/api/zion/linkedin/open`, { sessionId });
+
+        if (!res.ok) {
+          const txt = await res.text().catch(() => '');
+          throw new Error(`No se pudo iniciar el navegador (HTTP ${res.status}) ${txt}`);
         }
-        return origin;
-      }
 
-      function setConnectionStatus(text, colorClass) {
-        const badge = document.getElementById('connectionBadge');
-        const dot = badge.querySelector('span');
-        document.getElementById('connectionText').textContent = text;
-        dot.className = `size-2.5 rounded-full ${colorClass}`;
-      }
-
-      function log(message, type = 'info') {
-        const panel = document.getElementById('logPanel');
-        const line = document.createElement('div');
-        const palette = {
-          info: 'text-slate-200',
-          warning: 'text-amber-300',
-          error: 'text-rose-300',
-          success: 'text-emerald-300',
-        };
-        line.className = `flex gap-2 ${palette[type] || palette.info}`;
-        line.innerHTML = `<span class="text-slate-500">${new Date().toLocaleTimeString()}</span><span>${message}</span>`;
-        panel.appendChild(line);
-        panel.scrollTop = panel.scrollHeight;
-      }
-
-      // ----- Sesión y streaming -----
-      async function startSession() {
-        log('Iniciando sesión...', 'info');
-        document.getElementById('statusLabel').textContent = 'Inicializando…';
-
-        try {
-          const res = await fetch(\`\${baseUrl}/api/zion/linkedin/open\`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId }),
-          });
-          if (!res.ok) throw new Error('No se pudo iniciar el navegador');
-          log('Sesión iniciada', 'success');
-          updateStatus('active');
-          startStreaming();
-        } catch (e) {
-          log(e.message || 'Error al iniciar', 'error');
-          updateStatus('inactive');
-        }
-      }
-
-      async function stopSession() {
-        log('Deteniendo sesión...', 'warning');
-        try {
-          await fetch(\`\${baseUrl}/api/zion/linkedin/stop-session\`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId }),
-          });
-        } catch {}
-
-        if (state.socket) {
-          state.socket.disconnect();
-          state.socket = null;
-        }
-        document.getElementById('stage').classList.add('hidden');
-        document.getElementById('placeholder').classList.remove('hidden');
-        document.getElementById('fpsBadge').classList.add('hidden');
+        log('Sesión iniciada', 'success');
+        updateStatus('active');
+        startStreaming();
+      } catch (e) {
+        log(e?.message ?? 'Error al iniciar', 'error');
         updateStatus('inactive');
-        log('Sesión detenida', 'info');
+      }
+    }
+
+
+    async function stopSession() {
+      log('Deteniendo sesión...', 'warning');
+
+      try {
+        await httpPost(`${baseUrl}/api/zion/linkedin/stop-session`, { sessionId });
+      } catch (_) {
+        // ignore
       }
 
-      function updateStatus(status) {
-        state.status = status;
-        const label = document.getElementById('statusLabel');
-        switch (status) {
-          case 'active':
-            label.textContent = 'Activa';
-            label.className = 'text-emerald-300 font-semibold';
-            break;
-          case 'inactive':
-            label.textContent = 'Inactiva';
-            label.className = 'text-rose-300 font-semibold';
-            break;
-          default:
-            label.textContent = 'Desconocido';
-            label.className = 'text-amber-300 font-semibold';
+      if (state.socket) {
+        state.socket.disconnect();
+        state.socket = null;
+      }
+
+      document.getElementById('stage').classList.add('hidden');
+      document.getElementById('placeholder').classList.remove('hidden');
+      document.getElementById('fpsBadge').classList.add('hidden');
+
+      updateStatus('inactive');
+      log('Sesión detenida', 'info');
+    }
+
+
+    function updateStatus(status) {
+      state.status = status;
+      const label = document.getElementById('statusLabel');
+
+      if (status === 'active') {
+        label.textContent = 'Activa';
+        label.className = 'text-emerald-300 font-semibold';
+      } else if (status === 'inactive') {
+        label.textContent = 'Inactiva';
+        label.className = 'text-rose-300 font-semibold';
+      } else {
+        label.textContent = 'Desconocido';
+        label.className = 'text-amber-300 font-semibold';
+      }
+    }
+
+    function startStreaming() {
+      if (state.socket) state.socket.disconnect();
+
+      const socket = io(`${baseUrl}/api/zion/stream`, {
+        path: '/api/zion/socket.io',
+        query: { sessionId, fps: 2 },
+        transports: ['websocket'],     // <- clave para cortar loops de polling
+        withCredentials: true,         // <- clave si hay cookies
+        reconnectionAttempts: 10,
+        reconnectionDelayMax: 1500,
+      });
+
+      state.socket = socket;
+      bindOverlay();
+
+      let frames = 0;
+      let lastTick = Date.now();
+
+      setConnectionStatus('Conectando…', 'bg-amber-400');
+
+      socket.on('connect', () => {
+        setConnectionStatus('Conectado', 'bg-emerald-400');
+        log('Stream conectado', 'success');
+        document.getElementById('fpsBadge').classList.remove('hidden');
+      });
+
+      socket.on('frame', (data) => {
+        frames += 1;
+        const now = Date.now();
+
+        if (now - lastTick >= 1000) {
+          const fps = Math.round((frames * 1000) / (now - lastTick));
+          document.getElementById('fpsBadge').textContent = `${fps} FPS`;
+          frames = 0;
+          lastTick = now;
         }
+
+        const img = document.getElementById('screenImg');
+        img.src = `data:${data.mimeType};base64,${data.data}`;
+
+        document.getElementById('placeholder').classList.add('hidden');
+        document.getElementById('stage').classList.remove('hidden');
+
+        state.lastFrame = data;
+      });
+
+      socket.on('frame_error', (err) => {
+        const msg = err && err.message ? err.message : 'Error desconocido';
+        log(`Error de stream: ${msg}`, 'error');
+      });
+
+      socket.on('disconnect', () => {
+        setConnectionStatus('Desconectado', 'bg-amber-400');
+        document.getElementById('fpsBadge').classList.add('hidden');
+        log('Stream desconectado', 'warning');
+      });
+    }
+
+    const httpGet = (url) =>
+      fetch(url, { credentials: 'include', cache: 'no-store' });
+
+    const httpPost = (url, body) =>
+      fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(body),
+      });
+
+    let checkingSession = false;
+    let lastSessionCheckAt = 0;
+
+    async function checkSessionState({ silent = false } = {}) {
+      const now = Date.now();
+      if (checkingSession) return;
+      if (now - lastSessionCheckAt < 1500) return; // anti-loop
+
+      checkingSession = true;
+      lastSessionCheckAt = now;
+
+      if (!silent) log('Verificando sesión...', 'info');
+
+      try {
+        const url =
+          `${baseUrl}/api/zion/linkedin/session-state?sessionId=` +
+          encodeURIComponent(sessionId);
+
+        const res = await httpGet(url);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+
+        const statusText = data?.isLoggedIn ? 'Activa' : 'No autenticada';
+        const pct =
+          typeof data?.confidence === 'number'
+            ? ` (${Math.round(data.confidence * 100)}%)`
+            : '';
+
+        if (!silent) log(`Estado: ${statusText}${pct}`, data?.isLoggedIn ? 'success' : 'warning');
+        if (!silent && data?.reason) log(`Detalle: ${data.reason}`, 'info');
+
+        updateStatus(data?.isLoggedIn ? 'active' : 'inactive');
+        return data;
+      } catch (e) {
+        if (!silent) log('No se pudo verificar la sesión', 'error');
+        return null;
+      } finally {
+        checkingSession = false;
       }
+    }
 
-      function startStreaming() {
-        if (state.socket) state.socket.disconnect();
 
-        const socket = io(\`\${baseUrl}/api/zion/stream\`, {
-          path: '/api/zion/socket.io',
-          query: { sessionId, fps: 2 },
-          transports: ['websocket', 'polling'],
-        });
+    // ----- Acciones de LinkedIn -----
+    function openTaskModal(type) {
+      currentTask = type;
 
-        state.socket = socket;
-        bindOverlay();
+      const profile = document.getElementById('profileUrl').value.trim();
+      const body = document.getElementById('modalBody');
+      const title = document.getElementById('modalTitle');
 
-        let frames = 0;
-        let lastTick = Date.now();
-
-        socket.on('connect', () => {
-          setConnectionStatus('Conectado', 'bg-emerald-400');
-          log('Stream conectado', 'success');
-          document.getElementById('fpsBadge').classList.remove('hidden');
-        });
-
-        socket.on('frame', (data) => {
-          frames += 1;
-          const now = Date.now();
-          if (now - lastTick >= 1000) {
-            const fps = Math.round((frames * 1000) / (now - lastTick));
-            document.getElementById('fpsBadge').textContent = \`\${fps} FPS\`;
-            frames = 0;
-            lastTick = now;
-          }
-
-          const img = document.getElementById('screenImg');
-          img.src = \`data:\${data.mimeType};base64,\${data.data}\`;
-          document.getElementById('placeholder').classList.add('hidden');
-          document.getElementById('stage').classList.remove('hidden');
-          state.lastFrame = data;
-        });
-
-        socket.on('frame_error', (err) => {
-          log(\`Error de stream: \${err.message}\`, 'error');
-        });
-
-        socket.on('disconnect', () => {
-          setConnectionStatus('Desconectado', 'bg-amber-400');
-          document.getElementById('fpsBadge').classList.add('hidden');
-          log('Stream desconectado', 'warning');
-        });
-      }
-
-      async function checkSessionState() {
-        log('Verificando sesión...', 'info');
-        try {
-          const res = await fetch(
-            \`\${baseUrl}/api/zion/linkedin/session-state?sessionId=\${sessionId}\`
-          );
-          const data = await res.json();
-          const status = data.isLoggedIn ? 'Activa' : 'No autenticada';
-          log(
-            \`Estado: \${status} \${data.confidence ? '(' + Math.round(data.confidence * 100) + '%)' : ''}\`,
-            data.isLoggedIn ? 'success' : 'warning'
-          );
-          if (data.reason) log(\`Detalle: \${data.reason}\`, 'info');
-          updateStatus(data.isLoggedIn ? 'active' : 'inactive');
-        } catch (e) {
-          log('No se pudo verificar la sesión', 'error');
-        }
-      }
-
-      // ----- Acciones de LinkedIn -----
-      function openTaskModal(type) {
-        currentTask = type;
-        const profile = document.getElementById('profileUrl').value.trim();
-        const body = document.getElementById('modalBody');
-        const title = document.getElementById('modalTitle');
-
-        title.textContent = {
+      title.textContent =
+        {
           'send-message': 'Enviar mensaje',
           'send-connection': 'Enviar conexión',
           'read-chat': 'Leer chat',
         }[type] || 'Acción';
 
-        let html = `
+      let html = `
           <label class="text-sm text-slate-200">URL de perfil</label>
-          <input id="modalProfileUrl" value="${profile}" class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100" placeholder="https://www.linkedin.com/in/usuario" />
+          <input
+            id="modalProfileUrl"
+            value="${escapeAttr(profile)}"
+            class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+            placeholder="https://www.linkedin.com/in/usuario"
+          />
         `;
 
-        if (type === 'send-message') {
-          html += `
+      if (type === 'send-message') {
+        html += `
             <label class="text-sm text-slate-200">Mensaje</label>
-            <textarea id="modalMessage" class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 h-28" placeholder="Escribe tu mensaje..."></textarea>
+            <textarea
+              id="modalMessage"
+              class="h-28 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              placeholder="Escribe tu mensaje..."
+            ></textarea>
           `;
-        } else if (type === 'send-connection') {
-          html += `
+      } else if (type === 'send-connection') {
+        html += `
             <label class="text-sm text-slate-200">Nota (opcional)</label>
-            <textarea id="modalNote" class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 h-20" placeholder="Agrega una nota..."></textarea>
+            <textarea
+              id="modalNote"
+              class="h-20 w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              placeholder="Agrega una nota..."
+            ></textarea>
           `;
-        } else if (type === 'read-chat') {
-          html += `
+      } else if (type === 'read-chat') {
+        html += `
             <label class="text-sm text-slate-200">Límite de mensajes</label>
-            <input id="modalLimit" type="number" value="30" class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100" />
+            <input
+              id="modalLimit"
+              type="number"
+              value="30"
+              class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+            />
             <label class="text-sm text-slate-200">Pista de hilo (opcional)</label>
-            <input id="modalThreadHint" type="text" class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100" placeholder="Ej: recruiter" />
+            <input
+              id="modalThreadHint"
+              type="text"
+              class="w-full rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder-slate-500 focus:border-indigo-500 focus:ring-1 focus:ring-indigo-500"
+              placeholder="Ej: recruiter"
+            />
           `;
+      }
+
+      body.innerHTML = html;
+      document.getElementById('taskModal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+      document.getElementById('taskModal').classList.add('hidden');
+      currentTask = null;
+    }
+
+    async function executeTask() {
+      if (!currentTask) return;
+
+      const profileUrl = document.getElementById('modalProfileUrl').value.trim();
+      if (!profileUrl) {
+        alert('Ingresa la URL de perfil');
+        return;
+      }
+
+      const payload = { sessionId, profileUrl };
+      let endpoint = '';
+
+      if (currentTask === 'send-message') {
+        const message = document.getElementById('modalMessage').value.trim();
+        if (!message) {
+          alert('Ingresa un mensaje');
+          return;
+        }
+        payload.message = message;
+        endpoint = 'send-message';
+      } else if (currentTask === 'send-connection') {
+        const note = document.getElementById('modalNote').value.trim();
+        if (note) payload.note = note;
+        endpoint = 'send-connection';
+      } else if (currentTask === 'read-chat') {
+        const limitRaw = document.getElementById('modalLimit').value;
+        const limit = parseInt(limitRaw, 10) || 30;
+        const threadHint = document.getElementById('modalThreadHint').value.trim();
+        payload.limit = limit;
+        if (threadHint) payload.threadHint = threadHint;
+        endpoint = 'read-chat';
+      }
+
+      log('Ejecutando acción...', 'info');
+
+      try {
+        const res = await httpPost(`${baseUrl}/api/zion/linkedin/${endpoint}`, payload);
+
+        if (!res.ok) {
+          const txt = await res.text().catch(() => '');
+          throw new Error(`Acción falló (HTTP ${res.status}) ${txt}`);
         }
 
-        body.innerHTML = html;
-        document.getElementById('taskModal').classList.remove('hidden');
+        const data = await res.json().catch(() => null);
+
+        log('Acción completada', 'success');
+
+        if (data && typeof data === 'object') {
+          const preview = JSON.stringify(data).slice(0, 180);
+          log(`Respuesta: ${preview}${preview.length >= 180 ? '…' : ''}`, 'info');
+        }
+      } catch (e) {
+        log(e?.message ?? 'Acción falló', 'error');
+      } finally {
+        closeModal();
+      }
+    }
+
+
+    async function checkConnection() {
+      const profileUrl = document.getElementById('profileUrl').value.trim();
+      if (!profileUrl) {
+        alert('Ingresa la URL de perfil');
+        return;
       }
 
-      function closeModal() {
-        document.getElementById('taskModal').classList.add('hidden');
-        currentTask = null;
-      }
+      log('Verificando conexión...', 'info');
 
-      async function executeTask() {
-        if (!currentTask) return;
-        const profileUrl = document.getElementById('modalProfileUrl').value.trim();
-        if (!profileUrl) {
-          alert('Ingresa la URL de perfil');
+      try {
+        const res = await httpPost(`${baseUrl}/api/zion/linkedin/check-connection`, {
+          sessionId,
+          profileUrl,
+        });
+
+        if (!res.ok) {
+          const txt = await res.text().catch(() => '');
+          throw new Error(`No se pudo verificar (HTTP ${res.status}) ${txt}`);
+        }
+
+        const connected = await res.json();
+
+        log(
+          connected ? 'Ya estás conectado' : 'No estás conectado',
+          connected ? 'success' : 'warning'
+        );
+      } catch (e) {
+        log(e?.message ?? 'No se pudo verificar la conexión', 'error');
+      }
+    }
+
+
+    // ----- Interacción remota -----
+    function normalizeKey(k) {
+      if (k === ' ') return 'Space';
+      if (k === 'Esc') return 'Escape';
+      return k;
+    }
+
+    function modifiersFromEvent(e) {
+      const mods = [];
+      if (e.altKey) mods.push('Alt');
+      if (e.ctrlKey) mods.push('Control');
+      if (e.metaKey) mods.push('Meta');
+      if (e.shiftKey) mods.push('Shift');
+      return mods;
+    }
+
+    function toRemoteXY(clientX, clientY) {
+      const overlay = document.getElementById('overlay');
+      const img = document.getElementById('screenImg');
+      const r = overlay.getBoundingClientRect();
+
+      const rx = (clientX - r.left) / r.width;
+      const ry = (clientY - r.top) / r.height;
+
+      const w = img.naturalWidth || r.width;
+      const h = img.naturalHeight || r.height;
+
+      return {
+        x: Math.max(0, Math.min(w - 1, Math.round(rx * w))),
+        y: Math.max(0, Math.min(h - 1, Math.round(ry * h))),
+      };
+    }
+
+    function emitInput(payload) {
+      if (!state.socket || !state.socket.connected) return;
+      state.socket.emit('input', payload);
+    }
+
+    function bindOverlay() {
+      const overlay = document.getElementById('overlay');
+      if (overlay.dataset.bound === '1') return;
+      overlay.dataset.bound = '1';
+
+      let pointerDown = null;
+      let dragging = false;
+      let sentDown = false;
+      let lastMoveAt = 0;
+      let lastClickAt = 0;
+      let lastClickX = 0;
+      let lastClickY = 0;
+
+      overlay.addEventListener('pointerdown', (e) => {
+        overlay.setPointerCapture(e.pointerId);
+        overlay.focus({ preventScroll: true });
+
+        const { x, y } = toRemoteXY(e.clientX, e.clientY);
+
+        pointerDown = {
+          id: e.pointerId,
+          startX: x,
+          startY: y,
+          button: e.button,
+        };
+
+        dragging = false;
+        sentDown = false;
+        e.preventDefault();
+      });
+
+      overlay.addEventListener('pointermove', (e) => {
+        const { x, y } = toRemoteXY(e.clientX, e.clientY);
+        const now = Date.now();
+
+        if (!pointerDown) {
+          if (now - lastMoveAt > 25) {
+            emitInput({ type: 'move', x: x, y: y });
+            lastMoveAt = now;
+          }
           return;
         }
 
-        const payload = { sessionId, profileUrl };
-        let endpoint = '';
+        const dx = x - pointerDown.startX;
+        const dy = y - pointerDown.startY;
+        const dist = Math.hypot(dx, dy);
 
-        if (currentTask === 'send-message') {
-          const message = document.getElementById('modalMessage').value.trim();
-          if (!message) return alert('Ingresa un mensaje');
-          payload.message = message;
-          endpoint = 'send-message';
-        } else if (currentTask === 'send-connection') {
-          const note = document.getElementById('modalNote').value.trim();
-          if (note) payload.note = note;
-          endpoint = 'send-connection';
-        } else if (currentTask === 'read-chat') {
-          const limit = parseInt(document.getElementById('modalLimit').value) || 30;
-          const threadHint = document.getElementById('modalThreadHint').value.trim();
-          payload.limit = limit;
-          if (threadHint) payload.threadHint = threadHint;
-          endpoint = 'read-chat';
-        }
+        if (!dragging && dist > 3) dragging = true;
 
-        log('Ejecutando acción...', 'info');
-        try {
-          const res = await fetch(\`\${baseUrl}/api/zion/linkedin/\${endpoint}\`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-          });
-          const data = await res.json();
-          log('Acción completada', 'success');
-          if (data?.result) log(\`Resultado: \${JSON.stringify(data.result).slice(0, 120)}\`, 'info');
-        } catch (e) {
-          log('Acción falló', 'error');
-        } finally {
-          closeModal();
-        }
-      }
-
-      async function checkConnection() {
-        const profileUrl = document.getElementById('profileUrl').value.trim();
-        if (!profileUrl) return alert('Ingresa la URL de perfil');
-        log('Verificando conexión...', 'info');
-        try {
-          const res = await fetch(\`\${baseUrl}/api/zion/linkedin/check-connection\`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionId, profileUrl }),
-          });
-          const connected = await res.json();
-          log(connected ? 'Ya estás conectado' : 'No estás conectado', connected ? 'success' : 'warning');
-        } catch {
-          log('No se pudo verificar la conexión', 'error');
-        }
-      }
-
-      // ----- Interacción remota -----
-      function normalizeKey(k) {
-        if (k === ' ') return 'Space';
-        if (k === 'Esc') return 'Escape';
-        return k;
-      }
-
-      function modifiersFromEvent(e) {
-        const mods = [];
-        if (e.altKey) mods.push('Alt');
-        if (e.ctrlKey) mods.push('Control');
-        if (e.metaKey) mods.push('Meta');
-        if (e.shiftKey) mods.push('Shift');
-        return mods;
-      }
-
-      function toRemoteXY(clientX, clientY) {
-        const overlay = document.getElementById('overlay');
-        const img = document.getElementById('screenImg');
-        const r = overlay.getBoundingClientRect();
-        const rx = (clientX - r.left) / r.width;
-        const ry = (clientY - r.top) / r.height;
-        const w = img.naturalWidth || r.width;
-        const h = img.naturalHeight || r.height;
-        return {
-          x: Math.max(0, Math.min(w - 1, Math.round(rx * w))),
-          y: Math.max(0, Math.min(h - 1, Math.round(ry * h))),
-        };
-      }
-
-      function emitInput(payload) {
-        if (!state.socket || !state.socket.connected) return;
-        state.socket.emit('input', payload);
-      }
-
-      function bindOverlay() {
-        const overlay = document.getElementById('overlay');
-        if (overlay.dataset.bound === '1') return;
-        overlay.dataset.bound = '1';
-
-        let pointerDown = null;
-        let dragging = false;
-        let sentDown = false;
-        let lastMoveAt = 0;
-        let lastClickAt = 0;
-        let lastClickX = 0;
-        let lastClickY = 0;
-
-        overlay.addEventListener('pointerdown', (e) => {
-          overlay.setPointerCapture(e.pointerId);
-          const { x, y } = toRemoteXY(e.clientX, e.clientY);
-          pointerDown = { id: e.pointerId, startX: x, startY: y, button: e.button };
-          dragging = false;
-          sentDown = false;
-          e.preventDefault();
-        });
-
-        overlay.addEventListener('pointermove', (e) => {
-          const { x, y } = toRemoteXY(e.clientX, e.clientY);
-          const now = Date.now();
-          if (!pointerDown) {
-            if (now - lastMoveAt > 25) {
-              emitInput({ type: 'move', x, y });
-              lastMoveAt = now;
-            }
-            return;
+        if (dragging) {
+          if (!sentDown) {
+            sentDown = true;
+            emitInput({
+              type: 'down',
+              x: pointerDown.startX,
+              y: pointerDown.startY,
+              button:
+                pointerDown.button === 2
+                  ? 'right'
+                  : pointerDown.button === 1
+                    ? 'middle'
+                    : 'left',
+              modifiers: modifiersFromEvent(e),
+            });
           }
 
-          const dx = x - pointerDown.startX;
-          const dy = y - pointerDown.startY;
-          const dist = Math.hypot(dx, dy);
-          if (!dragging && dist > 3) dragging = true;
-
-          if (dragging) {
-            if (!sentDown) {
-              sentDown = true;
-              emitInput({
-                type: 'down',
-                x: pointerDown.startX,
-                y: pointerDown.startY,
-                button: pointerDown.button === 2 ? 'right' : pointerDown.button === 1 ? 'middle' : 'left',
-                modifiers: modifiersFromEvent(e),
-              });
-            }
-            if (now - lastMoveAt > 25) {
-              emitInput({ type: 'move', x, y });
-              lastMoveAt = now;
-            }
-          } else if (now - lastMoveAt > 25) {
-            emitInput({ type: 'move', x, y });
+          if (now - lastMoveAt > 25) {
+            emitInput({ type: 'move', x: x, y: y });
             lastMoveAt = now;
           }
-          e.preventDefault();
-        });
+        } else {
+          if (now - lastMoveAt > 25) {
+            emitInput({ type: 'move', x: x, y: y });
+            lastMoveAt = now;
+          }
+        }
 
-        overlay.addEventListener('pointerup', (e) => {
-          const { x, y } = toRemoteXY(e.clientX, e.clientY);
-          if (!pointerDown) return;
+        e.preventDefault();
+      });
 
-          if (dragging) {
-            emitInput({
-              type: 'up',
-              x,
-              y,
-              button: pointerDown.button === 2 ? 'right' : pointerDown.button === 1 ? 'middle' : 'left',
-              modifiers: modifiersFromEvent(e),
-            });
+      function endPointer(e) {
+        const { x, y } = toRemoteXY(e.clientX, e.clientY);
+        if (!pointerDown) return;
+
+        if (dragging) {
+          emitInput({
+            type: 'up',
+            x: x,
+            y: y,
+            button:
+              pointerDown.button === 2
+                ? 'right'
+                : pointerDown.button === 1
+                  ? 'middle'
+                  : 'left',
+            modifiers: modifiersFromEvent(e),
+          });
+        } else {
+          const now = Date.now();
+          const near =
+            Math.hypot(x - lastClickX, y - lastClickY) < 6 && now - lastClickAt < 320;
+          const clickCount = near ? 2 : 1;
+
+          if (clickCount === 2) {
+            lastClickAt = 0;
           } else {
-            const now = Date.now();
-            const near = Math.hypot(x - lastClickX, y - lastClickY) < 6 && now - lastClickAt < 320;
-            const clickCount = near ? 2 : 1;
-            if (clickCount === 2) {
-              lastClickAt = 0;
-            } else {
-              lastClickAt = now;
-              lastClickX = x;
-              lastClickY = y;
-            }
-            emitInput({
-              type: 'click',
-              x,
-              y,
-              button: pointerDown.button === 2 ? 'right' : pointerDown.button === 1 ? 'middle' : 'left',
-              clickCount,
-              modifiers: modifiersFromEvent(e),
-            });
+            lastClickAt = now;
+            lastClickX = x;
+            lastClickY = y;
           }
 
-          pointerDown = null;
-          dragging = false;
-          sentDown = false;
-          e.preventDefault();
-        });
+          emitInput({
+            type: 'click',
+            x: x,
+            y: y,
+            button:
+              pointerDown.button === 2
+                ? 'right'
+                : pointerDown.button === 1
+                  ? 'middle'
+                  : 'left',
+            clickCount: clickCount,
+            modifiers: modifiersFromEvent(e),
+          });
+        }
 
-        overlay.addEventListener('contextmenu', (e) => e.preventDefault());
-        overlay.addEventListener(
-          'wheel',
-          (e) => {
-            e.preventDefault();
-            emitInput({ type: 'wheel', dx: e.deltaX, dy: e.deltaY });
-          },
-          { passive: false }
-        );
-
-        overlay.addEventListener('keydown', (e) => {
-          const tag = (document.activeElement?.tagName || '').toLowerCase();
-          if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
-
-          const mods = modifiersFromEvent(e);
-          if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
-            emitInput({ type: 'type', text: e.key });
-          } else {
-            emitInput({ type: 'press', key: normalizeKey(e.key), modifiers: mods });
-          }
-          e.preventDefault();
-        });
-
-        overlay.addEventListener('paste', (e) => {
-          const text = e.clipboardData?.getData('text') || '';
-          if (text) {
-            emitInput({ type: 'type', text });
-            e.preventDefault();
-          }
-        });
+        pointerDown = null;
+        dragging = false;
+        sentDown = false;
+        e.preventDefault();
       }
 
-      // ----- Init -----
-      document.getElementById('startBtn').addEventListener('click', startSession);
-      document.getElementById('stopBtn').addEventListener('click', stopSession);
-      document.getElementById('checkBtn').addEventListener('click', checkSessionState);
+      overlay.addEventListener('pointerup', endPointer);
+      overlay.addEventListener('pointercancel', (e) => {
+        // Trata cancel como un "up" para no dejar el mouse "presionado"
+        endPointer(e);
+      });
 
-      (async function bootstrap() {
-        // Ping server to set indicator
-        try {
-          const res = await fetch(\`\${baseUrl}/api/zion/linkedin/session-state\`);
-          if (res.ok) setConnectionStatus('Listo', 'bg-emerald-400');
-          else setConnectionStatus('Sin conexión', 'bg-amber-400');
-        } catch {
-          setConnectionStatus('Sin conexión', 'bg-amber-400');
+      overlay.addEventListener('contextmenu', (e) => e.preventDefault());
+
+      overlay.addEventListener(
+        'wheel',
+        (e) => {
+          e.preventDefault();
+          emitInput({ type: 'wheel', dx: e.deltaX, dy: e.deltaY });
+        },
+        { passive: false }
+      );
+
+      overlay.addEventListener('keydown', (e) => {
+        const tag = (document.activeElement && document.activeElement.tagName
+          ? document.activeElement.tagName
+          : ''
+        ).toLowerCase();
+
+        if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+        const mods = modifiersFromEvent(e);
+
+        if (e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey) {
+          emitInput({ type: 'type', text: e.key });
+        } else {
+          emitInput({ type: 'press', key: normalizeKey(e.key), modifiers: mods });
         }
-        // Arranca sesión al cargar
-        startSession();
-      })();
-    </script>
-  </body>
+
+        e.preventDefault();
+      });
+
+      overlay.addEventListener('paste', (e) => {
+        const text = e.clipboardData ? e.clipboardData.getData('text') : '';
+        if (text) {
+          emitInput({ type: 'type', text: text });
+          e.preventDefault();
+        }
+      });
+    }
+
+    // ----- Init -----
+    document.getElementById('startBtn').addEventListener('click', startSession);
+    document.getElementById('stopBtn').addEventListener('click', stopSession);
+    document.getElementById('checkBtn').addEventListener('click', checkSessionState);
+
+    (async function bootstrap() {
+      try {
+        await checkSessionState({ silent: true }); // <- ahora con sessionId + credentials
+        setConnectionStatus('Listo', 'bg-emerald-400');
+      } catch (_) {
+        setConnectionStatus('Sin conexión', 'bg-amber-400');
+      }
+
+      // Importante: NO abras/streamees “a ciegas” si session-state está fallando.
+      startSession();
+    })();
+  </script>
+</body>
+
 </html>

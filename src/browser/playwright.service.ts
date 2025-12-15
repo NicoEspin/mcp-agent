@@ -301,6 +301,80 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       return false;
     }
   }
+  private readonly cookieMonitorGen = new Map<SessionId, number>();
+  private readonly cookieMonitorTimers = new Map<SessionId, NodeJS.Timeout[]>();
+
+  private stopLinkedInCookieMonitor(sessionId: SessionId) {
+    const timers = this.cookieMonitorTimers.get(sessionId);
+    if (timers?.length) {
+      for (const t of timers) clearTimeout(t);
+    }
+    this.cookieMonitorTimers.delete(sessionId);
+  }
+
+  private startLinkedInCookieMonitor(
+    sessionId: SessionId,
+    context: BrowserContext,
+  ) {
+    // Cancela el monitor previo (si existía)
+    this.stopLinkedInCookieMonitor(sessionId);
+
+    // Generación para invalidar callbacks viejos
+    const gen = (this.cookieMonitorGen.get(sessionId) ?? 0) + 1;
+    this.cookieMonitorGen.set(sessionId, gen);
+
+    const checkpoints = [2000, 5000, 10000, 15000, 30000];
+    const timers: NodeJS.Timeout[] = [];
+
+    for (const delay of checkpoints) {
+      const t = setTimeout(async () => {
+        // Si ya arrancó otro monitor, este callback queda inválido
+        if (this.cookieMonitorGen.get(sessionId) !== gen) return;
+
+        try {
+          // 1) Chequeo REAL, sin leer archivos y sin spamear save
+          const loggedIn = await this.cookieManager.isLinkedInLoggedInRealTime(
+            sessionId,
+            context,
+          );
+
+          if (loggedIn) {
+            // 2) Guardar UNA sola vez cuando aparece li_at, y cortar monitor
+            await this.cookieManager.saveCookies(
+              sessionId,
+              context,
+              'linkedin.com',
+            );
+            this.logger.log(
+              `🔐 LinkedIn login detected for session ${sessionId} (monitor @${delay}ms)`,
+            );
+            this.stopLinkedInCookieMonitor(sessionId);
+            return;
+          }
+
+          this.logger.debug(
+            `LinkedIn monitor (${delay}ms): still not logged (session: ${sessionId})`,
+          );
+
+          // 3) Si fue el último checkpoint, cortamos el monitor sí o sí
+          if (delay === checkpoints[checkpoints.length - 1]) {
+            this.stopLinkedInCookieMonitor(sessionId);
+          }
+        } catch (error) {
+          this.logger.warn(
+            `LinkedIn cookie monitor failed at ${delay}ms for session ${sessionId}: ${error}`,
+          );
+          if (delay === checkpoints[checkpoints.length - 1]) {
+            this.stopLinkedInCookieMonitor(sessionId);
+          }
+        }
+      }, delay);
+
+      timers.push(t);
+    }
+
+    this.cookieMonitorTimers.set(sessionId, timers);
+  }
 
   private async isContextAlive(context: BrowserContext): Promise<boolean> {
     try {
@@ -455,7 +529,11 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
         });
       } catch (error: any) {
         const msg = error?.message?.toLowerCase?.() ?? '';
-        if (msg.includes('browser has been closed') || msg.includes('target page') || msg.includes('context or browser has been closed')) {
+        if (
+          msg.includes('browser has been closed') ||
+          msg.includes('target page') ||
+          msg.includes('context or browser has been closed')
+        ) {
           this.logger.warn(
             `Browser appeared closed when creating context for ${sessionId}, reinitializing...`,
           );
@@ -570,11 +648,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
     // If navigating to LinkedIn, continuously monitor and save cookies
     if (url.includes('linkedin.com')) {
-      await this.monitorLinkedInCookies(
-        sessionId,
-        session.context,
-        wasLoggedInBefore,
-      );
+      this.startLinkedInCookieMonitor(sessionId, session.context);
     }
 
     this.logger.debug(`Navigated to ${url} (session: ${sessionId})`);
@@ -679,11 +753,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     // Monitor cookies after code execution (especially for LinkedIn operations)
     const currentUrl = await session.page.url();
     if (currentUrl.includes('linkedin.com')) {
-      await this.monitorLinkedInCookies(
-        sessionId,
-        session.context,
-        wasLoggedInBefore,
-      );
+      this.startLinkedInCookieMonitor(sessionId, session.context);
     }
 
     return result;

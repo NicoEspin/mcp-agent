@@ -10,6 +10,7 @@ import { LinkedinSessionGuard } from './session/linkedin-session.guard';
 import { StreamModule } from '../stream/stream.module';
 import { LinkedinChatService } from './services/linkedin-chat.service';
 import { LinkedinConnectionService } from './services/linkedin-connection.service';
+import { LinkedinActionVerifierService } from './services/linkedin-action-verifier.service';
 
 @Module({
   imports: [BrowserModule, StreamModule],
@@ -20,6 +21,7 @@ import { LinkedinConnectionService } from './services/linkedin-connection.servic
     LinkedinConnectionService, // nuevo
     LinkedinSessionService,
     LinkedinSessionGuard,
+    LinkedinActionVerifierService,
   ],
 })
 export class LinkedinModule {}

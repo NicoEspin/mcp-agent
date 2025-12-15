@@ -81,85 +81,324 @@ export class LinkedinConnectionService {
     profileUrl: string,
   ): Promise<any> {
     const startTime = Date.now();
-    
+
+    type ConnStatus = 'connected' | 'pending' | 'not_connected' | 'unknown';
+
     const verboseResult = {
       ok: true,
+      // ✅ compat: antes era boolean -> lo mantenemos como "isConnected"
       result: false,
+      // ✅ nuevo: estado 3-way (+ unknown)
+      status: 'unknown' as ConnStatus,
+      pending: false,
+
       profileUrl,
       sessionId,
+
       executionDetails: {
         startTime,
         endTime: null as number | null,
         executionTimeMs: null as number | null,
-        method: 'openai_vision_analysis',
+        method: 'openai_vision_after_overflow_menu',
         fallbackAttempts: 0,
         steps: [] as string[],
         errors: [] as any[],
+
+        playwright: {
+          usedRunCode: false,
+          openOverflowResult: null as any,
+          menuItems: [] as string[],
+        },
+
         openaiDetails: {
           model: 'gpt-5-nano',
           prompt: null as string | null,
           response: null as any,
-          outputText: null as string | null,
-          usage: null as any
-        }
+          rawText: null as string | null,
+          parsed: null as any,
+          usage: null as any,
+        },
       },
     };
 
+    const safeJsonParse = (text: string): any | null => {
+      try {
+        return JSON.parse(text);
+      } catch {
+        const m = text.match(/\{[\s\S]*\}/);
+        if (!m) return null;
+        try {
+          return JSON.parse(m[0]);
+        } catch {
+          return null;
+        }
+      }
+    };
+
+    const normalizeStatus = (s: any): ConnStatus => {
+      const v = String(s ?? '')
+        .toLowerCase()
+        .trim();
+      if (v === 'connected') return 'connected';
+      if (v === 'pending') return 'pending';
+      if (v === 'not_connected' || v === 'notconnected') return 'not_connected';
+      return 'unknown';
+    };
+
+    const inferFromMenuItems = (items: string[]): ConnStatus => {
+      const joined = items.join(' | ').toLowerCase();
+
+      // pending: retirar/cancelar invitación, withdraw invitation, etc.
+      if (
+        /retirar invitación|retirar la invitación|withdraw invitation|cancel invitation|cancelar invitación|cancelar solicitud|anular invitación|pending|pendiente|invited|invitación enviada/.test(
+          joined,
+        )
+      ) {
+        return 'pending';
+      }
+
+      // connected: eliminar/quitar conexión, remove connection, etc.
+      if (
+        /eliminar conexión|quitar conexión|remove connection|remove from my network|desconectar/.test(
+          joined,
+        )
+      ) {
+        return 'connected';
+      }
+
+      // not_connected: conectar/invitar/enviar invitación
+      if (
+        /conectar|connect|invitar|invite|enviar invitación|send invitation|enviar conexión/.test(
+          joined,
+        )
+      ) {
+        return 'not_connected';
+      }
+
+      return 'unknown';
+    };
+
+    // --- abre overflow ("Más") y devuelve textos del menú ---
+    const buildOpenOverflowCode = (url: string) => `
+async (page) => {
+  const profileUrl = ${JSON.stringify(url)};
+  const debug = (msg) => console.log('[check-connection]', msg, 'url=', page.url());
+
+  page.setDefaultTimeout(8000);
+  page.setDefaultNavigationTimeout(25000);
+
+  await debug('Ir al perfil');
+  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
+  await page.waitForTimeout(900);
+  await debug('Perfil cargado');
+
+  const main = page.locator('main').first();
+
+  // scope preferido: top card si existe
+  const topCard =
+    main.locator('.pv-top-card, .pv-top-card-v2-ctas, .pv-top-card-v2').first();
+
+  const scope = (await topCard.count()) ? topCard : main;
+
+  const candidates = [
+    // "Más acciones" (3 dots) típico del perfil
+    scope.locator('button[id$="-profile-overflow-action"].artdeco-dropdown__trigger').first(),
+    scope.locator('button[aria-label*="Más acciones" i], button[aria-label*="More actions" i]').first(),
+
+    // Botón "Más" (texto "Más"/"More") que abre menú
+    scope.locator(
+      'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
+      'button[data-view-name="profile-overflow-button"][aria-label="More"]'
+    ).first(),
+
+    // Fallback global
+    main.locator('button[id$="-profile-overflow-action"].artdeco-dropdown__trigger').first(),
+    main.locator('button[aria-label*="Más acciones" i], button[aria-label*="More actions" i]').first(),
+    main.locator(
+      'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
+      'button[data-view-name="profile-overflow-button"][aria-label="More"]'
+    ).first(),
+  ];
+
+  let moreBtn = null;
+  let used = null;
+
+  for (let i = 0; i < candidates.length; i++) {
+    const btn = candidates[i];
+    const ok = await btn.isVisible().catch(() => false);
+    if (ok) {
+      moreBtn = btn;
+      used = i;
+      break;
+    }
+  }
+
+  if (!moreBtn) {
+    throw new Error('No se encontró botón "Más / Más acciones" en el perfil.');
+  }
+
+  await debug('Click en overflow (Más/Más acciones)');
+  await moreBtn.scrollIntoViewIfNeeded().catch(() => {});
+  await moreBtn.click({ timeout: 8000, force: true });
+  await page.waitForTimeout(250);
+
+  // Preferimos artdeco-dropdown inner
+  const dropdownInner = page.locator('div.artdeco-dropdown__content-inner').last();
+  const menuRole = page.locator('[role="menu"]').last();
+
+  let root = null;
+
+  try {
+    await dropdownInner.waitFor({ state: 'visible', timeout: 7000 });
+    root = dropdownInner;
+    await debug('Dropdown inner visible');
+  } catch {
+    await menuRole.waitFor({ state: 'visible', timeout: 7000 });
+    root = menuRole;
+    await debug('Role=menu visible');
+  }
+
+  // Extraer items (mejor esfuerzo)
+  const itemsLoc = root.locator(
+    'div.artdeco-dropdown__item[role="button"], [role="menuitem"], button, a'
+  );
+  const textsRaw = await itemsLoc.allTextContents().catch(() => []);
+  const texts = (textsRaw || [])
+    .map((t) => (t || '').replace(/\\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 60);
+
+  return {
+    ok: true,
+    usedCandidateIndex: used,
+    url: page.url(),
+    menuItems: texts,
+  };
+}
+`;
+
     try {
-      verboseResult.executionDetails.steps.push('Starting checkConnection process');
-      
-      // Check LinkedIn authentication status before proceeding
-      verboseResult.executionDetails.steps.push('Checking LinkedIn authentication status');
+      verboseResult.executionDetails.steps.push(
+        'Starting checkConnection process',
+      );
+      verboseResult.executionDetails.steps.push(
+        'Checking LinkedIn authentication status',
+      );
+
       const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
       if (!isAuthenticated) {
-        verboseResult.executionDetails.steps.push('User not logged into LinkedIn - returning false');
-        this.logger.warn(
-          `Cannot check connection - user not logged into LinkedIn (session: ${sessionId})`,
-        );
-        
         const endTime = Date.now();
         verboseResult.executionDetails.endTime = endTime;
         verboseResult.executionDetails.executionTimeMs = endTime - startTime;
         verboseResult.ok = false;
         verboseResult.result = false;
+        verboseResult.status = 'unknown';
+        verboseResult.pending = false;
         verboseResult.executionDetails.errors.push({
           message: 'User not authenticated',
-          timestamp: endTime
+          timestamp: endTime,
         });
-        
+        verboseResult.executionDetails.steps.push(
+          'User not logged into LinkedIn - aborting',
+        );
         return verboseResult;
       }
 
-      verboseResult.executionDetails.steps.push('User authenticated, capturing profile screenshot');
-      const { base64, mimeType } = await this.captureProfileScreenshot(
-        sessionId,
-        profileUrl,
+      // 1) Abrir overflow como en sendConnection
+      verboseResult.executionDetails.steps.push(
+        'Opening overflow menu (Más/Más acciones) before taking screenshot',
       );
-      
-      verboseResult.executionDetails.steps.push(`Screenshot captured: ${mimeType}, size: ${base64.length} chars`);
 
+      const canRunCode = await this.hasTool(sessionId, 'browser_run_code');
+      if (!canRunCode) {
+        verboseResult.executionDetails.fallbackAttempts += 1;
+        verboseResult.executionDetails.steps.push(
+          'browser_run_code no disponible -> fallback: screenshot del perfil (menos confiable)',
+        );
+
+        // fallback: navegar al perfil igual
+        await this.playwright.navigate(profileUrl, sessionId);
+        await new Promise((r) => setTimeout(r, 900));
+      } else {
+        verboseResult.executionDetails.playwright.usedRunCode = true;
+
+        const openOverflowCode = buildOpenOverflowCode(profileUrl);
+        const openOverflowResult = await this.playwright.runCode(
+          openOverflowCode,
+          sessionId,
+        );
+
+        verboseResult.executionDetails.playwright.openOverflowResult =
+          openOverflowResult;
+
+        const menuItems = Array.isArray(openOverflowResult?.menuItems)
+          ? openOverflowResult.menuItems
+          : [];
+
+        verboseResult.executionDetails.playwright.menuItems = menuItems;
+
+        verboseResult.executionDetails.steps.push(
+          `Overflow menu opened. Extracted menu items: ${menuItems.length}`,
+        );
+      }
+
+      // 2) Screenshot (con el dropdown ya abierto)
+      verboseResult.executionDetails.steps.push(
+        'Capturing screenshot after menu render',
+      );
+
+      // ✅ importante: forzamos captura para no depender de cache
+      const shot = await this.stream.forceScreenshotBase64(sessionId);
+      const base64 = shot?.data;
+      const mimeType = shot?.mimeType ?? 'image/jpeg';
+
+      if (!base64) {
+        throw new Error('Screenshot vacío desde MCP (forceScreenshotBase64).');
+      }
+
+      verboseResult.executionDetails.steps.push(
+        `Screenshot captured: ${mimeType}, size: ${base64.length} chars`,
+      );
+
+      // 3) OpenAI Vision: clasificar 3 estados
       const prompt = `
-Analizá esta captura del perfil de LinkedIn.
+Analizá esta captura de LinkedIn (perfil con el menú de "Más / Más acciones" abierto).
 
 Objetivo:
-Determinar si el usuario LOGUEADO actualmente en LinkedIn ya está conectado con este perfil.
+Determinar el estado de conexión ENTRE el usuario LOGUEADO y el perfil.
+
+Tenés que clasificar en uno de estos estados:
+- "connected": ya están conectados (ej: aparece "Eliminar conexión" / "Remove connection" o señales claras de conexión).
+- "pending": hay solicitud enviada pendiente (ej: "Pendiente" / "Pending" / "Invitación enviada" / "Withdraw invitation" / "Retirar invitación").
+- "not_connected": NO están conectados (ej: aparece "Conectar" / "Connect" / "Enviar conexión" / "Send invitation").
+- "unknown": no se puede determinar con confianza (login/captcha/imagen incompleta).
 
 Reglas de salida:
-- Respondé SOLO con "true" o "false" (sin comillas).
-- true => ya están conectados.
-- false => NO están conectados o aparece un CTA que indica que hay que enviar solicitud.
-`;
+Respondé SOLO con JSON válido (sin markdown, sin texto extra) con este formato exacto:
+{
+  "status": "connected" | "pending" | "not_connected" | "unknown",
+  "confidence": number,
+  "signals": string[]
+}
+
+Notas:
+- "confidence" entre 0 y 1.
+- "signals" son pistas textuales visibles (palabras como "Conectar", "Pendiente", "Eliminar conexión", etc).
+`.trim();
 
       verboseResult.executionDetails.openaiDetails.prompt = prompt;
-      verboseResult.executionDetails.steps.push('Sending request to OpenAI vision model');
+      verboseResult.executionDetails.steps.push(
+        'Sending screenshot to OpenAI vision model',
+      );
 
       const resp = await this.openai.chat.completions.create({
         model: 'gpt-5-nano',
+        temperature: 0,
         messages: [
           {
             role: 'system',
             content:
-              'Sos un clasificador estricto. Respondés únicamente true o false.',
+              'Sos un clasificador estricto de UI. Respondés únicamente JSON válido con el formato solicitado.',
           },
           {
             role: 'user',
@@ -167,9 +406,7 @@ Reglas de salida:
               { type: 'text', text: prompt },
               {
                 type: 'image_url',
-                image_url: {
-                  url: `data:${mimeType};base64,${base64}`,
-                },
+                image_url: { url: `data:${mimeType};base64,${base64}` },
               },
             ],
           },
@@ -178,61 +415,59 @@ Reglas de salida:
 
       verboseResult.executionDetails.openaiDetails.response = resp;
       verboseResult.executionDetails.openaiDetails.usage = resp.usage;
-      
-      const out = resp?.choices?.[0]?.message?.content?.trim().toLowerCase() ?? '';
-      verboseResult.executionDetails.openaiDetails.outputText = out;
-      verboseResult.executionDetails.steps.push(`OpenAI response received: "${out}"`);
 
-      let finalResult = false;
-      
-      if (out === 'true') {
-        finalResult = true;
-        verboseResult.executionDetails.steps.push('Direct match: "true" - users are connected');
-      } else if (out === 'false') {
-        finalResult = false;
-        verboseResult.executionDetails.steps.push('Direct match: "false" - users not connected');
-      } else {
-        const hasTrue = /\btrue\b/i.test(out);
-        const hasFalse = /\bfalse\b/i.test(out);
+      const rawText = resp?.choices?.[0]?.message?.content?.trim() ?? '';
+      verboseResult.executionDetails.openaiDetails.rawText = rawText;
 
-        if (hasTrue && !hasFalse) {
-          finalResult = true;
-          verboseResult.executionDetails.steps.push('Regex match: found "true" in response - users are connected');
-        } else if (hasFalse && !hasTrue) {
-          finalResult = false;
-          verboseResult.executionDetails.steps.push('Regex match: found "false" in response - users not connected');
-        } else {
-          verboseResult.executionDetails.steps.push(`Unexpected model output: ${out} - defaulting to false`);
-          verboseResult.executionDetails.errors.push({
-            message: `Unexpected model output: ${out}`,
-            timestamp: Date.now()
-          });
-          this.logger.warn(`checkConnection: salida inesperada del modelo: ${out}`);
-          finalResult = false;
+      const parsed = safeJsonParse(rawText) ?? {};
+      verboseResult.executionDetails.openaiDetails.parsed = parsed;
+
+      let status = normalizeStatus(parsed?.status);
+
+      // si el modelo devolvió basura, inferimos por menú (si lo tenemos)
+      if (status === 'unknown') {
+        const menuStatus = inferFromMenuItems(
+          verboseResult.executionDetails.playwright.menuItems ?? [],
+        );
+        if (menuStatus !== 'unknown') {
+          status = menuStatus;
+          verboseResult.executionDetails.steps.push(
+            `OpenAI status=unknown -> inferred from menuItems: ${menuStatus}`,
+          );
         }
       }
+
+      verboseResult.status = status;
+      verboseResult.pending = status === 'pending';
+      verboseResult.result = status === 'connected';
+
+      verboseResult.executionDetails.steps.push(
+        `Final status: ${status} (isConnected=${verboseResult.result}, pending=${verboseResult.pending})`,
+      );
 
       const endTime = Date.now();
       verboseResult.executionDetails.endTime = endTime;
       verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.result = finalResult;
-      verboseResult.executionDetails.steps.push(`Final result: ${finalResult}`);
-      
+
       return verboseResult;
-      
     } catch (e: any) {
       const endTime = Date.now();
       verboseResult.executionDetails.endTime = endTime;
       verboseResult.executionDetails.executionTimeMs = endTime - startTime;
       verboseResult.ok = false;
       verboseResult.result = false;
+      verboseResult.status = 'unknown';
+      verboseResult.pending = false;
+
       verboseResult.executionDetails.errors.push({
         message: e?.message ?? 'Unknown error',
         stack: e?.stack,
-        timestamp: endTime
+        timestamp: endTime,
       });
-      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
-      
+      verboseResult.executionDetails.steps.push(
+        `Error occurred: ${e?.message ?? 'Unknown error'}`,
+      );
+
       return verboseResult;
     }
   }
@@ -246,7 +481,7 @@ Reglas de salida:
     note?: string,
   ) {
     const startTime = Date.now();
-    
+
     const verboseResult = {
       ok: true,
       profileUrl,
@@ -265,46 +500,55 @@ Reglas de salida:
         playwrightDetails: {
           codeLength: null as number | null,
           humanLikeDelays: true,
-          selectors: [] as string[]
-        }
+          selectors: [] as string[],
+        },
       },
       note: null as string | null,
       toolResult: null as any,
     };
 
     try {
-      verboseResult.executionDetails.steps.push('Starting sendConnection process');
-      
+      verboseResult.executionDetails.steps.push(
+        'Starting sendConnection process',
+      );
+
       // Check LinkedIn authentication status before proceeding
-      verboseResult.executionDetails.steps.push('Checking LinkedIn authentication status');
+      verboseResult.executionDetails.steps.push(
+        'Checking LinkedIn authentication status',
+      );
       const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
       if (!isAuthenticated) {
-        verboseResult.executionDetails.steps.push('User not authenticated - returning error');
-        
+        verboseResult.executionDetails.steps.push(
+          'User not authenticated - returning error',
+        );
+
         const endTime = Date.now();
         verboseResult.executionDetails.endTime = endTime;
         verboseResult.executionDetails.executionTimeMs = endTime - startTime;
         verboseResult.executionDetails.errors.push({
           message: 'User not logged into LinkedIn',
-          timestamp: endTime
+          timestamp: endTime,
         });
-        
+
         return {
           ok: false,
           error: 'User not logged into LinkedIn',
-          detail: 'Please login to LinkedIn first before attempting to send connections',
+          detail:
+            'Please login to LinkedIn first before attempting to send connections',
           executionDetails: verboseResult.executionDetails,
           profileUrl,
-          sessionId
+          sessionId,
         };
       }
 
-      verboseResult.executionDetails.steps.push('User authenticated, building Playwright execution code');
+      verboseResult.executionDetails.steps.push(
+        'User authenticated, building Playwright execution code',
+      );
 
-    // Direct Playwright execution
+      // Direct Playwright execution
 
-    // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
-    const code = `
+      // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
+      const code = `
 async (page) => {
   const profileUrl = ${JSON.stringify(profileUrl)};
   const note = ${JSON.stringify(note ?? '')};
@@ -705,65 +949,102 @@ async (page) => {
 }
 `;
 
-    try {
-      verboseResult.executionDetails.playwrightDetails.codeLength = code.length;
-      verboseResult.executionDetails.steps.push(`Generated Playwright code: ${code.length} characters`);
-      verboseResult.executionDetails.steps.push('Executing Playwright code with human-like behavior');
-      
-      const result = await this.playwright.runCode(code, sessionId);
+      try {
+        verboseResult.executionDetails.playwrightDetails.codeLength =
+          code.length;
+        verboseResult.executionDetails.steps.push(
+          `Generated Playwright code: ${code.length} characters`,
+        );
+        verboseResult.executionDetails.steps.push(
+          'Executing Playwright code with human-like behavior',
+        );
 
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.executionDetails.steps.push('Playwright execution completed');
+        const result = await this.playwright.runCode(code, sessionId);
 
-      this.logger.debug(
-        'browser_run_code result (sendConnection popover): ' +
-          JSON.stringify(result, null, 2),
-      );
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.executionDetails.steps.push(
+          'Playwright execution completed',
+        );
 
-      if (result?.isError) {
+        this.logger.debug(
+          'browser_run_code result (sendConnection popover): ' +
+            JSON.stringify(result, null, 2),
+        );
+
+        if (result?.isError) {
+          verboseResult.executionDetails.errors.push({
+            message: 'Playwright MCP error',
+            detail: result?.content ?? result,
+            timestamp: endTime,
+          });
+          verboseResult.executionDetails.steps.push(
+            `Error in Playwright execution: ${result?.content ?? result}`,
+          );
+
+          return {
+            ok: false,
+            error: 'Playwright MCP error en browser_run_code',
+            detail: result?.content ?? result,
+            executionDetails: verboseResult.executionDetails,
+            profileUrl,
+            sessionId,
+          };
+        }
+
+        // Track which method was used
+        const connectionMethod = result?.viaDirect
+          ? 'botón directo "Conectar"'
+          : 'dropdown "Más acciones"';
+        const selectorInfo = result?.selector
+          ? ` (selector: ${result.selector})`
+          : '';
+
+        verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
+        verboseResult.executionDetails.steps.push(
+          `Connection sent via: ${connectionMethod}${selectorInfo}`,
+        );
+
+        if (result?.viaDirect) {
+          verboseResult.executionDetails.playwrightDetails.selectors.push(
+            result.selector || 'unknown',
+          );
+        }
+
+        if (result?.noteAdded) {
+          verboseResult.executionDetails.steps.push(
+            `Custom note added: ${note?.slice(0, 50)}...`,
+          );
+        }
+
+        verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
+        verboseResult.toolResult = result;
+
+        return verboseResult;
+      } catch (e: any) {
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
         verboseResult.executionDetails.errors.push({
-          message: 'Playwright MCP error',
-          detail: result?.content ?? result,
-          timestamp: endTime
+          message: e?.message ?? 'Unknown error',
+          stack: e?.stack,
+          timestamp: endTime,
         });
-        verboseResult.executionDetails.steps.push(`Error in Playwright execution: ${result?.content ?? result}`);
-        
+        verboseResult.executionDetails.steps.push(
+          `Error occurred: ${e?.message ?? 'Unknown error'}`,
+        );
+
+        this.logger.warn(`sendConnection (popover) failed: ${e?.message ?? e}`);
+
         return {
           ok: false,
-          error: 'Playwright MCP error en browser_run_code',
-          detail: result?.content ?? result,
+          error: e?.message ?? 'Unknown error',
           executionDetails: verboseResult.executionDetails,
           profileUrl,
-          sessionId
+          sessionId,
         };
       }
-
-      // Track which method was used
-      const connectionMethod = result?.viaDirect
-        ? 'botón directo "Conectar"'
-        : 'dropdown "Más acciones"';
-      const selectorInfo = result?.selector
-        ? ` (selector: ${result.selector})`
-        : '';
-
-      verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
-      verboseResult.executionDetails.steps.push(`Connection sent via: ${connectionMethod}${selectorInfo}`);
-      
-      if (result?.viaDirect) {
-        verboseResult.executionDetails.playwrightDetails.selectors.push(result.selector || 'unknown');
-      }
-      
-      if (result?.noteAdded) {
-        verboseResult.executionDetails.steps.push(`Custom note added: ${note?.slice(0, 50)}...`);
-      }
-
-      verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
-      verboseResult.toolResult = result;
-
-      return verboseResult;
-      
     } catch (e: any) {
       const endTime = Date.now();
       verboseResult.executionDetails.endTime = endTime;
@@ -771,39 +1052,20 @@ async (page) => {
       verboseResult.executionDetails.errors.push({
         message: e?.message ?? 'Unknown error',
         stack: e?.stack,
-        timestamp: endTime
+        timestamp: endTime,
       });
-      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
-
-      this.logger.warn(`sendConnection (popover) failed: ${e?.message ?? e}`);
-      
-      return { 
-        ok: false, 
-        error: e?.message ?? 'Unknown error',
-        executionDetails: verboseResult.executionDetails,
-        profileUrl,
-        sessionId
-      };
-    }
-    } catch (e: any) {
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.executionDetails.errors.push({
-        message: e?.message ?? 'Unknown error',
-        stack: e?.stack,
-        timestamp: endTime
-      });
-      verboseResult.executionDetails.steps.push(`Outer error: ${e?.message ?? 'Unknown error'}`);
+      verboseResult.executionDetails.steps.push(
+        `Outer error: ${e?.message ?? 'Unknown error'}`,
+      );
 
       this.logger.warn(`sendConnection failed: ${e?.message ?? e}`);
-      
-      return { 
-        ok: false, 
+
+      return {
+        ok: false,
         error: e?.message ?? 'Unknown error',
         executionDetails: verboseResult.executionDetails,
         profileUrl,
-        sessionId
+        sessionId,
       };
     }
   }

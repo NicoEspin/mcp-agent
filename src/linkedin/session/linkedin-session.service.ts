@@ -4,6 +4,28 @@ import { ConfigService } from '@nestjs/config';
 import { PlaywrightService } from '../../browser/playwright.service';
 import { StreamService } from '../../stream/stream.service';
 
+export interface LinkedinSessionExecutionDetails {
+  startTime: number;
+  endTime: number | null;
+  executionTimeMs: number | null;
+  methodsUsed: string[];
+  cookieCheckDetails: {
+    method: 'playwright_cookie_inspection';
+    wasSuccessful: boolean;
+    tokenLength: number | null;
+  };
+  visionCheckDetails: {
+    used: boolean;
+    openaiModel: string | null;
+    screenshotSize: number | null;
+    openaiPrompt: string | null;
+    openaiResponse: string | null;
+    openaiUsage: any;
+  };
+  fallbackAttempts: number;
+  steps: string[];
+}
+
 export interface LinkedinSessionCheck {
   ok: boolean;
   isLoggedIn: boolean;
@@ -12,7 +34,10 @@ export interface LinkedinSessionCheck {
   reason?: string;
   checkedAt: number;
   imageMimeType?: string;
-  sessionId?: string; // <- para trazabilidad
+  sessionId?: string;
+
+  // ✅ nuevo
+  executionDetails?: LinkedinSessionExecutionDetails;
 }
 
 @Injectable()
@@ -159,44 +184,58 @@ No incluyas texto fuera del JSON.
     force = false,
   ): Promise<LinkedinSessionCheck> {
     const startTime = Date.now();
-    let cookieCheck: LinkedinSessionCheck | null = null;
 
-    const executionDetails = {
+    const executionDetails: LinkedinSessionExecutionDetails = {
       startTime,
-      endTime: null as number | null,
-      executionTimeMs: null as number | null,
-      methodsUsed: [] as string[],
+      endTime: null,
+      executionTimeMs: null,
+      methodsUsed: [],
       cookieCheckDetails: {
         method: 'playwright_cookie_inspection',
         wasSuccessful: false,
-        tokenLength: null as number | null
+        tokenLength: null,
       },
       visionCheckDetails: {
         used: false,
-        openaiModel: null as string | null,
-        screenshotSize: null as number | null,
-        openaiPrompt: null as string | null,
-        openaiResponse: null as string | null,
-        openaiUsage: null as any
+        openaiModel: null,
+        screenshotSize: null,
+        openaiPrompt: null,
+        openaiResponse: null,
+        openaiUsage: null,
       },
       fallbackAttempts: 0,
-      steps: [] as string[]
+      steps: [],
+    };
+
+    // ✅ inicializado: nunca null
+    let cookieCheck: LinkedinSessionCheck = {
+      ok: false,
+      isLoggedIn: false,
+      confidence: 0,
+      signals: ['init'],
+      reason: 'not_checked_yet',
+      checkedAt: Date.now(),
+      sessionId,
+      executionDetails,
     };
 
     try {
       executionDetails.steps.push(`Starting session check for: ${sessionId}`);
       executionDetails.steps.push(`Force mode: ${force}`);
       executionDetails.methodsUsed.push('cookie_check');
-      
+
       const isLoggedIn = await this.playwright.isLinkedInLoggedIn(sessionId);
       const hasToken = isLoggedIn
         ? await this.playwright.getLinkedInAuthToken(sessionId)
         : null;
 
       executionDetails.cookieCheckDetails.wasSuccessful = true;
+
       if (hasToken) {
         executionDetails.cookieCheckDetails.tokenLength = hasToken.length;
-        executionDetails.steps.push(`Found li_at token: ${hasToken.slice(0, 10)}... (length: ${hasToken.length})`);
+        executionDetails.steps.push(
+          `Found li_at token: ${hasToken.slice(0, 10)}... (length: ${hasToken.length})`,
+        );
       } else {
         executionDetails.steps.push('No li_at token found in cookies');
       }
@@ -211,10 +250,13 @@ No incluyas texto fuera del JSON.
           : 'li_at cookie no encontrada',
         checkedAt: Date.now(),
         sessionId,
-        executionDetails
-      } as any;
+        executionDetails,
+      };
     } catch (e: any) {
-      executionDetails.steps.push(`Cookie check failed: ${e?.message ?? 'Unknown error'}`);
+      executionDetails.steps.push(
+        `Cookie check failed: ${e?.message ?? 'Unknown error'}`,
+      );
+
       cookieCheck = {
         ok: false,
         isLoggedIn: false,
@@ -223,44 +265,43 @@ No incluyas texto fuera del JSON.
         reason: e?.message ?? 'Error checking li_at cookie',
         checkedAt: Date.now(),
         sessionId,
-        executionDetails
-      } as any;
+        executionDetails,
+      };
     }
 
-    // If cookie says logged in, optionally double-check with vision when forced (e.g., after an action failure)
+    // Si cookie dice logged in, opcionalmente validar con visión en force
     if (cookieCheck.ok && cookieCheck.isLoggedIn) {
-      let finalCheck = cookieCheck;
+      let finalCheck: LinkedinSessionCheck = cookieCheck;
 
       if (force) {
-        executionDetails.steps.push('Force mode enabled - running vision fallback');
+        executionDetails.steps.push(
+          'Force mode enabled - running vision fallback',
+        );
         executionDetails.methodsUsed.push('vision_fallback');
         executionDetails.fallbackAttempts = 1;
-        
-        const visionCheck = await this.runVisionFallback(sessionId, executionDetails);
-        // If vision disagrees or fails, prefer its outcome for safety
-        if (!visionCheck.ok || !visionCheck.isLoggedIn) {
-          finalCheck = {
-            ...visionCheck,
-            signals: ['vision_fallback_after_failure'].concat(
-              visionCheck.signals ?? [],
-            ),
-            executionDetails
-          } as any;
-        } else {
-          finalCheck = {
-            ...visionCheck,
-            signals: ['vision_fallback_after_failure'].concat(
-              visionCheck.signals ?? [],
-            ),
-            executionDetails
-          } as any;
-        }
+
+        const visionCheck = await this.runVisionFallback(
+          sessionId,
+          executionDetails,
+        );
+
+        // preferí visión si falla o contradice
+        finalCheck = {
+          ...visionCheck,
+          signals: [
+            'vision_fallback_after_failure',
+            ...(visionCheck.signals ?? []),
+          ],
+          executionDetails,
+        };
       }
 
       const endTime = Date.now();
       executionDetails.endTime = endTime;
       executionDetails.executionTimeMs = endTime - startTime;
-      finalCheck.executionDetails = executionDetails;
+
+      // asegurá que el final tenga detalles
+      finalCheck = { ...finalCheck, executionDetails };
 
       this.lastChecks.set(sessionId, finalCheck);
 
@@ -274,38 +315,49 @@ No incluyas texto fuera del JSON.
       return finalCheck;
     }
 
-    // Fallback: visual validation via OpenAI if cookie check failed or says not logged in
-    executionDetails.steps.push('Cookie check failed or user not logged in - running vision fallback');
+    // Fallback: visión cuando cookie falla o dice no logged
+    executionDetails.steps.push(
+      'Cookie check failed or user not logged in - running vision fallback',
+    );
     executionDetails.methodsUsed.push('vision_fallback');
     executionDetails.fallbackAttempts = 1;
-    
-    const visionCheck = await this.runVisionFallback(sessionId, executionDetails);
-    
+
+    const visionCheck = await this.runVisionFallback(
+      sessionId,
+      executionDetails,
+    );
+
     const endTime = Date.now();
     executionDetails.endTime = endTime;
     executionDetails.executionTimeMs = endTime - startTime;
-    visionCheck.executionDetails = executionDetails;
-    
-    this.lastChecks.set(sessionId, visionCheck);
+
+    const finalVisionCheck: LinkedinSessionCheck = {
+      ...visionCheck,
+      executionDetails,
+    };
+
+    this.lastChecks.set(sessionId, finalVisionCheck);
 
     this.logger.log(
-      `LinkedIn session check [${sessionId}] -> logged=${visionCheck.isLoggedIn} ` +
-        `conf=${visionCheck.confidence ?? '?'} ` +
-        `signals=${(visionCheck.signals ?? []).join(',')} ` +
+      `LinkedIn session check [${sessionId}] -> logged=${finalVisionCheck.isLoggedIn} ` +
+        `conf=${finalVisionCheck.confidence ?? '?'} ` +
+        `signals=${(finalVisionCheck.signals ?? []).join(',')} ` +
         `time=${executionDetails.executionTimeMs}ms`,
     );
 
-    return visionCheck;
+    return finalVisionCheck;
   }
 
   private async runVisionFallback(
     sessionId: string,
-    executionDetails?: any
+    executionDetails?: LinkedinSessionExecutionDetails,
   ): Promise<LinkedinSessionCheck> {
     const apiKey = this.getOpenAIKey();
     if (!apiKey) {
       if (executionDetails) {
-        executionDetails.steps.push('Vision fallback failed: missing OpenAI API key');
+        executionDetails.steps.push(
+          'Vision fallback failed: missing OpenAI API key',
+        );
       }
       return {
         ok: false,
@@ -343,7 +395,9 @@ No incluyas texto fuera del JSON.
 
     if (executionDetails) {
       executionDetails.visionCheckDetails.screenshotSize = data.length;
-      executionDetails.steps.push(`Screenshot captured: ${mimeType}, size: ${data.length} chars`);
+      executionDetails.steps.push(
+        `Screenshot captured: ${mimeType}, size: ${data.length} chars`,
+      );
       executionDetails.visionCheckDetails.openaiPrompt = this.buildPrompt();
     }
 
