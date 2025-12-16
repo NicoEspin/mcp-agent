@@ -32,7 +32,6 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private clientSession = new Map<string, SessionId>();
 
   constructor(private readonly streamService: StreamService) {}
-
   handleConnection(client: Socket) {
     const rawFps = client.handshake.query?.fps;
     const fpsNum = Array.isArray(rawFps) ? rawFps[0] : rawFps;
@@ -50,12 +49,21 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
       `Client connected ${client.id} (fps=${fps}, sessionId=${sessionId})`,
     );
 
-    // ✅ INPUT: the key feature
+    // ✅ INPUT
     client.on('input', async (ev: InputEvent, ack?: (res: any) => void) => {
       const sid = this.clientSession.get(client.id) ?? 'default';
       try {
-        await this.streamService.dispatchInput(sid, ev);
-        ack?.({ ok: true });
+        const data = await this.streamService.dispatchInput(sid, ev);
+        ack?.(data ? { ok: true, ...data } : { ok: true });
+
+        // (Opcional, pero mejora muchísimo la sensación “real time”)
+        // Dispara un frame inmediato post-input
+        void this.streamService
+          .forceScreenshotBase64(sid)
+          .then(({ data, mimeType }) => {
+            client.emit('frame', { data, mimeType, ts: Date.now() });
+          })
+          .catch(() => {});
       } catch (err: any) {
         ack?.({ ok: false, message: err?.message ?? 'input failed' });
       }
@@ -64,18 +72,28 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
     // warm first frame
     this.streamService.getScreenshotBase64(sessionId).catch(() => {});
 
-    const timer = setInterval(async () => {
+    let running = false;
+
+    const tick = async () => {
+      if (running) return; // ✅ evita duplicados
+      running = true;
       try {
         const { data, mimeType } =
-          await this.streamService.getScreenshotBase64(sessionId);
+          await this.streamService.getCachedScreenshotBase64(
+            sessionId,
+            intervalMs, // cache “alineado” al fps
+          );
         client.emit('frame', { data, mimeType, ts: Date.now() });
       } catch (err: any) {
         client.emit('frame_error', {
           message: err?.message ?? 'Unknown streaming error',
         });
+      } finally {
+        running = false;
       }
-    }, intervalMs);
+    };
 
+    const timer = setInterval(() => void tick(), intervalMs);
     this.timers.set(client.id, timer);
   }
 

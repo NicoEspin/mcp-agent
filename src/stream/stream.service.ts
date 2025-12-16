@@ -20,31 +20,61 @@ export class StreamService {
 
   constructor(private readonly playwright: PlaywrightService) {}
 
-  private enqueueInput(sessionId: SessionId, task: () => Promise<void>) {
+  private enqueueInput<T>(
+    sessionId: SessionId,
+    task: () => Promise<T>,
+  ): Promise<T> {
     const prev = this.inputChain.get(sessionId) ?? Promise.resolve();
-    const next = prev.catch(() => {}).then(task);
-    this.inputChain.set(sessionId, next);
-    return next;
+
+    let resolve!: (v: T) => void;
+    let reject!: (e: any) => void;
+    const out = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+
+    const next = prev
+      .catch(() => {})
+      .then(async () => {
+        try {
+          resolve(await task());
+        } catch (e) {
+          reject(e);
+        }
+      });
+
+    // la cadena guarda "void" para mantener el orden
+    this.inputChain.set(
+      sessionId,
+      next.then(() => {}),
+    );
+    return out;
   }
 
-  async dispatchInput(sessionId: SessionId, ev: InputEvent) {
+  async dispatchInput(sessionId: SessionId, ev: InputEvent): Promise<any> {
     return this.enqueueInput(sessionId, async () => {
+      let result: any = undefined;
+      let invalidate = true;
+
       switch (ev.type) {
         case 'move':
           await this.playwright.mouseMove(sessionId, ev.x, ev.y);
           break;
+
         case 'down':
           await this.playwright.mouseDown(sessionId, ev.x, ev.y, {
             button: ev.button,
             modifiers: ev.modifiers,
           });
           break;
+
         case 'up':
           await this.playwright.mouseUp(sessionId, ev.x, ev.y, {
             button: ev.button,
             modifiers: ev.modifiers,
           });
           break;
+
         case 'click':
           await this.playwright.mouseClick(sessionId, ev.x, ev.y, {
             button: ev.button,
@@ -52,26 +82,46 @@ export class StreamService {
             modifiers: ev.modifiers,
           });
           break;
+
         case 'wheel':
           await this.playwright.mouseWheel(sessionId, ev.dx, ev.dy);
           break;
+
         case 'type':
           await this.playwright.keyboardType(sessionId, ev.text, ev.delayMs);
           break;
+
         case 'press':
           await this.playwright.keyboardPress(sessionId, ev.key, ev.modifiers);
           break;
+
         case 'keyDown':
           await this.playwright.keyboardDown(sessionId, ev.key);
           break;
+
         case 'keyUp':
           await this.playwright.keyboardUp(sessionId, ev.key);
           break;
+
+        case 'cmd':
+          // listTabs no cambia la pantalla => no invalida
+          invalidate = ev.command !== 'listTabs';
+
+          if (ev.command === 'reload')
+            result = await this.playwright.reloadPage(sessionId);
+          if (ev.command === 'newTab')
+            result = await this.playwright.newTab(sessionId, ev.url, true);
+          if (ev.command === 'closeTab')
+            result = await this.playwright.closeTab(sessionId, ev.tabId);
+          if (ev.command === 'switchTab')
+            result = await this.playwright.switchTab(sessionId, ev.tabId!);
+          if (ev.command === 'listTabs')
+            result = await this.playwright.listTabs(sessionId);
+          break;
       }
 
-      // ✅ Just invalidate the cache - let the normal interval pick it up
-      // This avoids racing with the WebSocket's screenshot interval
-      this.invalidatedAt.set(sessionId, Date.now());
+      if (invalidate) this.invalidatedAt.set(sessionId, Date.now());
+      return result;
     });
   }
 

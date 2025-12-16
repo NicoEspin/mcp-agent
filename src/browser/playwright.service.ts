@@ -22,12 +22,34 @@ import { CookieManagerService } from './cookie-manager.service';
 import * as path from 'path';
 import * as fs from 'fs';
 import { StorageStateService } from './storage-state.service';
+import { randomUUID } from 'crypto';
 
 type SessionId = string;
 
+type TabId = string;
+
+type TabInfo = {
+  tabId: TabId;
+  url: string;
+  title: string;
+  active: boolean;
+};
+
+type ListTabsResponse = {
+  activeTabId: TabId;
+  tabs: TabInfo[];
+};
+
 interface BrowserSession {
   context: BrowserContext;
+
+  // ✅ tab activa (compat con tu código actual)
   page: Page;
+  activeTabId: TabId;
+
+  // ✅ todas las tabs
+  pages: Map<TabId, Page>;
+
   lastUsedAt: number;
 }
 
@@ -52,6 +74,26 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
   private normalizeButton(btn?: MouseButton): MouseButton {
     return btn ?? 'left';
+  }
+
+  private async createPage(context: BrowserContext): Promise<Page> {
+    const page = await context.newPage();
+    page.setDefaultTimeout(this.getTimeoutAction());
+    page.setDefaultNavigationTimeout(this.getTimeoutNavigation());
+    return page;
+  }
+
+  private setActiveTab(
+    sessionId: SessionId,
+    session: BrowserSession,
+    tabId: string,
+  ) {
+    const p = session.pages.get(tabId);
+    if (!p) throw new Error(`Tab not found: ${tabId}`);
+    session.activeTabId = tabId;
+    session.page = p; // ✅ clave: stream + inputs siguen funcionando
+    session.lastUsedAt = Date.now();
+    this.sessions.set(sessionId, session);
   }
 
   private chord(modifiers: StreamModifier[] | undefined, key: string) {
@@ -99,6 +141,121 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       return await fn();
     } finally {
       await this.releaseModifiers(page, modifiers);
+    }
+  }
+
+  // ✅ invalida handlers viejos cuando se recrea una sesión
+  private readonly sessionGen = new Map<SessionId, number>();
+
+  private bumpSessionGen(sessionId: SessionId): number {
+    const next = (this.sessionGen.get(sessionId) ?? 0) + 1;
+    this.sessionGen.set(sessionId, next);
+    return next;
+  }
+
+  private getSessionGen(sessionId: SessionId): number {
+    return this.sessionGen.get(sessionId) ?? 0;
+  }
+
+  private findTabIdByPage(session: BrowserSession, page: Page): TabId | null {
+    for (const [id, p] of session.pages.entries()) {
+      if (p === page) return id;
+    }
+    return null;
+  }
+
+  private bindPageLifecycle(
+    sessionId: SessionId,
+    session: BrowserSession,
+    gen: number,
+    tabId: TabId,
+    page: Page,
+  ) {
+    // timeouts consistentes
+    try {
+      page.setDefaultTimeout(this.getTimeoutAction());
+      page.setDefaultNavigationTimeout(this.getTimeoutNavigation());
+    } catch {}
+
+    // popup => nueva tab
+    page.on('popup', (popup) => {
+      if (this.getSessionGen(sessionId) !== gen) return;
+      this.registerPage(sessionId, session, gen, popup, true);
+      void popup.bringToFront().catch(() => {});
+    });
+
+    // si se cierra una tab, limpiarla del map y recuperar activa si hace falta
+    page.on('close', () => {
+      if (this.getSessionGen(sessionId) !== gen) return;
+
+      // puede ya no existir la sesión (stopSession)
+      const live = this.sessions.get(sessionId);
+      if (!live) return;
+
+      live.pages.delete(tabId);
+
+      if (live.pages.size === 0) {
+        // no queda ninguna: creamos una nueva "blank" para que stream no muera
+        void (async () => {
+          try {
+            const newPage = await this.createPage(live.context);
+            const newId = randomUUID();
+            live.pages.set(newId, newPage);
+            this.bindPageLifecycle(sessionId, live, gen, newId, newPage);
+            this.setActiveTab(sessionId, live, newId);
+            await newPage.goto('about:blank').catch(() => {});
+          } catch {}
+        })();
+        return;
+      }
+
+      if (tabId === live.activeTabId) {
+        const next = live.pages.keys().next().value as TabId | undefined;
+        if (next) this.setActiveTab(sessionId, live, next);
+      } else {
+        this.sessions.set(sessionId, live);
+      }
+    });
+  }
+
+  private registerPage(
+    sessionId: SessionId,
+    session: BrowserSession,
+    gen: number,
+    page: Page,
+    makeActive: boolean,
+  ): TabId {
+    // evita duplicados (context.on('page') + popup pueden disparar ambos)
+    const existing = this.findTabIdByPage(session, page);
+    if (existing) {
+      if (makeActive) this.setActiveTab(sessionId, session, existing);
+      return existing;
+    }
+
+    const tabId = randomUUID();
+    session.pages.set(tabId, page);
+    this.bindPageLifecycle(sessionId, session, gen, tabId, page);
+
+    if (makeActive) this.setActiveTab(sessionId, session, tabId);
+    else this.sessions.set(sessionId, session);
+
+    return tabId;
+  }
+
+  private async pruneDeadPages(session: BrowserSession) {
+    const entries = Array.from(session.pages.entries());
+    for (const [tabId, p] of entries) {
+      const alive = await this.isPageAlive(p).catch(() => false);
+      if (!alive) session.pages.delete(tabId);
+    }
+  }
+
+  private async ensureActiveTab(sessionId: SessionId, session: BrowserSession) {
+    if (session.pages.size === 0) return;
+
+    if (!session.pages.has(session.activeTabId)) {
+      const next = session.pages.keys().next().value as TabId;
+      this.setActiveTab(sessionId, session, next);
     }
   }
 
@@ -269,6 +426,12 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     // Stop keepalive
     this.stopKeepalive();
 
+    // Invalida handlers (popups/close) para todas las sesiones
+    for (const [sessionId] of this.sessions.entries()) {
+      this.bumpSessionGen(sessionId);
+      this.stopLinkedInCookieMonitor(sessionId);
+    }
+
     // Best-effort: persist state for all alive sessions before closing
     for (const [sessionId, session] of this.sessions.entries()) {
       try {
@@ -284,11 +447,13 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       }
     }
 
-    // Close all sessions
+    // Close all sessions (✅ cerrar TODAS las tabs)
     for (const [sessionId, session] of this.sessions.entries()) {
       try {
-        await session.page.close();
-        await session.context.close();
+        for (const [, p] of session.pages.entries()) {
+          await p.close().catch(() => {});
+        }
+        await session.context.close().catch(() => {});
       } catch (e: any) {
         this.logger.warn(`Error closing session ${sessionId}: ${e}`);
       }
@@ -297,7 +462,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     this.sessions.clear();
 
     if (this.browser) {
-      await this.browser.close();
+      await this.browser.close().catch(() => {});
       this.browser = null;
     }
   }
@@ -492,15 +657,25 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     const brokenSessions: SessionId[] = [];
 
     for (const [sessionId, session] of this.sessions.entries()) {
-      const contextAlive = await this.isContextAlive(session.context);
-      const pageAlive = contextAlive
-        ? await this.isPageAlive(session.page)
-        : false;
-
-      if (!contextAlive || !pageAlive) {
+      const contextAlive = await this.isContextAlive(session.context).catch(
+        () => false,
+      );
+      if (!contextAlive) {
         brokenSessions.push(sessionId);
         continue;
       }
+
+      // ✅ limpiar tabs cerradas
+      await this.pruneDeadPages(session);
+
+      // ✅ si no quedan tabs, sesión rota
+      if (session.pages.size === 0) {
+        brokenSessions.push(sessionId);
+        continue;
+      }
+
+      // ✅ asegurar que activeTabId exista
+      await this.ensureActiveTab(sessionId, session);
 
       // ✅ persistencia periódica si está en LinkedIn y ya hay li_at
       try {
@@ -514,13 +689,16 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
           if (logged) {
             await this.storageState.saveState(sessionId, session.context, {
               requireLiAt: true,
-              // deja el throttle por config, no hace falta 0 acá
             });
           }
         }
       } catch (e) {
         this.logger.debug(`Keepalive persist skipped for ${sessionId}: ${e}`);
       }
+
+      // update last used
+      session.lastUsedAt = Date.now();
+      this.sessions.set(sessionId, session);
     }
 
     // Remove broken sessions
@@ -528,6 +706,8 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       this.logger.debug(
         `Removing broken session during keepalive: ${sessionId}`,
       );
+      this.bumpSessionGen(sessionId);
+      this.stopLinkedInCookieMonitor(sessionId);
       this.sessions.delete(sessionId);
     }
 
@@ -575,95 +755,125 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
 
     let session = this.sessions.get(sessionId);
 
-    // Check if existing session is still valid
+    // ✅ si existe, validar y recuperar active tab si hace falta
     if (session) {
-      const contextAlive = await this.isContextAlive(session.context);
-      const pageAlive = contextAlive
-        ? await this.isPageAlive(session.page)
-        : false;
+      const contextAlive = await this.isContextAlive(session.context).catch(
+        () => false,
+      );
 
-      if (!contextAlive || !pageAlive) {
+      if (!contextAlive) {
         this.logger.warn(
-          `Session ${sessionId} detected as closed, recreating...`,
+          `Session ${sessionId} context is closed, recreating...`,
         );
+        this.bumpSessionGen(sessionId);
+        this.stopLinkedInCookieMonitor(sessionId);
 
         try {
-          if (pageAlive) await session.page.close();
-          if (contextAlive) await session.context.close();
+          for (const [, p] of session.pages.entries()) {
+            await p.close().catch(() => {});
+          }
+          await session.context.close().catch(() => {});
         } catch {}
 
         this.sessions.delete(sessionId);
         session = undefined;
-      }
-    }
+      } else {
+        // limpiar tabs cerradas
+        await this.pruneDeadPages(session);
 
-    if (!session) {
-      let context: BrowserContext;
-
-      // ✅ storageState restore
-      const hasValidState = this.storageState.ensureValidStateFile(sessionId);
-      const statePath = this.storageState.getStatePath(sessionId);
-
-      const ctxOptions: any = {
-        viewport: this.getViewportSize(),
-        ignoreHTTPSErrors: true,
-        bypassCSP: true,
-        ...this.getContextFingerprint(),
-      };
-
-      if (hasValidState) {
-        ctxOptions.storageState = statePath;
-        this.logger.log(`♻️ Restoring storageState for session ${sessionId}`);
-      }
-
-      try {
-        context = await this.browser!.newContext(ctxOptions);
-      } catch (error: any) {
-        const msg = error?.message?.toLowerCase?.() ?? '';
-        if (
-          msg.includes('browser has been closed') ||
-          msg.includes('target page') ||
-          msg.includes('context or browser has been closed')
-        ) {
-          this.logger.warn(
-            `Browser appeared closed when creating context for ${sessionId}, reinitializing...`,
-          );
-          await this.initBrowser();
-          context = await this.browser!.newContext(ctxOptions);
+        // si no queda ninguna tab, crear una nueva
+        if (session.pages.size === 0) {
+          const gen = this.getSessionGen(sessionId); // misma gen, no recreamos sesión
+          const newPage = await this.createPage(session.context);
+          this.registerPage(sessionId, session, gen, newPage, true);
+          await newPage.goto('about:blank').catch(() => {});
         } else {
-          throw error;
+          // asegurar active válida
+          await this.ensureActiveTab(sessionId, session);
         }
+
+        session.lastUsedAt = Date.now();
+        this.sessions.set(sessionId, session);
+        return session;
       }
-
-      // Block service workers if configured
-      if (this.config.get<string>('PLAYWRIGHT_BLOCK_SW') === 'true') {
-        await context.route('**/*', (route) => {
-          const u = route.request().url();
-          if (u.includes('sw.js') || u.includes('service-worker')) {
-            route.abort();
-          } else {
-            route.continue();
-          }
-        });
-      }
-
-      const page = await context.newPage();
-
-      page.setDefaultTimeout(this.getTimeoutAction());
-      page.setDefaultNavigationTimeout(this.getTimeoutNavigation());
-
-      session = {
-        context,
-        page,
-        lastUsedAt: Date.now(),
-      };
-
-      this.sessions.set(sessionId, session);
-      this.logger.log(`Created new session: ${sessionId}`);
-    } else {
-      session.lastUsedAt = Date.now();
-      this.sessions.set(sessionId, session);
     }
+
+    // ✅ crear sesión nueva
+    let context: BrowserContext;
+
+    const gen = this.bumpSessionGen(sessionId);
+
+    // storageState restore
+    const hasValidState = this.storageState.ensureValidStateFile(sessionId);
+    const statePath = this.storageState.getStatePath(sessionId);
+
+    const ctxOptions: any = {
+      viewport: this.getViewportSize(),
+      ignoreHTTPSErrors: true,
+      bypassCSP: true,
+      ...this.getContextFingerprint(),
+    };
+
+    if (hasValidState) {
+      ctxOptions.storageState = statePath;
+      this.logger.log(`♻️ Restoring storageState for session ${sessionId}`);
+    }
+
+    try {
+      context = await this.browser!.newContext(ctxOptions);
+    } catch (error: any) {
+      const msg = error?.message?.toLowerCase?.() ?? '';
+      if (
+        msg.includes('browser has been closed') ||
+        msg.includes('target page') ||
+        msg.includes('context or browser has been closed')
+      ) {
+        this.logger.warn(
+          `Browser appeared closed when creating context for ${sessionId}, reinitializing...`,
+        );
+        await this.initBrowser();
+        context = await this.browser!.newContext(ctxOptions);
+      } else {
+        throw error;
+      }
+    }
+
+    // Block service workers if configured
+    if (this.config.get<string>('PLAYWRIGHT_BLOCK_SW') === 'true') {
+      await context.route('**/*', (route) => {
+        const u = route.request().url();
+        if (u.includes('sw.js') || u.includes('service-worker')) {
+          route.abort();
+        } else {
+          route.continue();
+        }
+      });
+    }
+
+    const page = await this.createPage(context);
+
+    session = {
+      context,
+      page,
+      activeTabId: 'tmp' as TabId, // se setea abajo
+      pages: new Map(),
+      lastUsedAt: Date.now(),
+    };
+
+    // ✅ si el context crea páginas por scripts/popup, también las registramos
+    context.on('page', (p) => {
+      if (this.getSessionGen(sessionId) !== gen) return;
+      this.registerPage(sessionId, session!, gen, p, true);
+      void p.bringToFront().catch(() => {});
+    });
+
+    // ✅ registrar la primera tab y dejarla activa
+    const firstTabId = this.registerPage(sessionId, session, gen, page, true);
+    session.activeTabId = firstTabId;
+    session.page = page;
+
+    this.sessions.set(sessionId, session);
+    this.logger.log(`Created new session: ${sessionId}`);
 
     return session;
   }
@@ -873,21 +1083,26 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     const session = this.sessions.get(sessionId);
 
     if (!session) {
-      return {
-        success: false,
-        message: `Session "${sessionId}" not found`,
-      };
+      return { success: false, message: `Session "${sessionId}" not found` };
     }
 
     try {
+      // ✅ invalida handlers + frena cookie monitor
+      this.bumpSessionGen(sessionId);
+      this.stopLinkedInCookieMonitor(sessionId);
+
       // ✅ persist before closing
       await this.storageState.saveState(sessionId, session.context, {
         requireLiAt: true,
         minIntervalMs: 0,
       });
 
-      await session.page.close();
-      await session.context.close();
+      // ✅ cerrar TODAS las tabs
+      for (const [, p] of session.pages.entries()) {
+        await p.close().catch(() => {});
+      }
+
+      await session.context.close().catch(() => {});
       this.sessions.delete(sessionId);
 
       this.logger.log(`Session "${sessionId}" stopped successfully`);
@@ -1158,6 +1373,106 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   /**
    * Force immediate cookie check and save (useful for manual authentication detection)
    */
+
+  async newTab(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+    url?: string,
+    makeActive: boolean = true,
+  ) {
+    const session = await this.getSession(sessionId);
+    const page = await this.createPage(session.context);
+
+    const gen = this.getSessionGen(sessionId);
+    const tabId = this.registerPage(sessionId, session, gen, page, makeActive);
+
+    if (url) {
+      await page.goto(url, {
+        waitUntil: 'domcontentloaded',
+        timeout: this.getTimeoutNavigation(),
+      });
+
+      if (url.includes('linkedin.com')) {
+        this.startLinkedInCookieMonitor(sessionId, session.context);
+      }
+    }
+
+    return { tabId, activeTabId: session.activeTabId };
+  }
+
+  async reloadPage(sessionId: SessionId = this.DEFAULT_SESSION_ID) {
+    const session = await this.getSession(sessionId);
+    await session.page.reload({
+      waitUntil: 'domcontentloaded',
+      timeout: this.getTimeoutNavigation(),
+    });
+
+    const url = session.page.url();
+    if (url.includes('linkedin.com'))
+      this.startLinkedInCookieMonitor(sessionId, session.context);
+
+    return { ok: true, url };
+  }
+
+  async switchTab(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+    tabId: string,
+  ) {
+    const session = await this.getSession(sessionId);
+    this.setActiveTab(sessionId, session, tabId);
+    await session.page.bringToFront().catch(() => {});
+    return { ok: true, activeTabId: session.activeTabId };
+  }
+
+  async listTabs(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<ListTabsResponse> {
+    const session = await this.getSession(sessionId);
+
+    const tabs: TabInfo[] = [];
+
+    for (const [id, p] of session.pages.entries()) {
+      let url = 'unknown';
+      let title = '';
+      try {
+        url = p.url();
+        title = await p.title();
+      } catch {}
+
+      tabs.push({
+        tabId: id,
+        url,
+        title,
+        active: id === session.activeTabId,
+      });
+    }
+
+    return { activeTabId: session.activeTabId, tabs };
+  }
+
+  async closeTab(
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+    tabId?: string,
+  ) {
+    const session = await this.getSession(sessionId);
+    const id = tabId ?? session.activeTabId;
+
+    const page = session.pages.get(id);
+    if (!page) {
+      return {
+        ok: false,
+        message: 'Tab not found',
+        activeTabId: session.activeTabId,
+      };
+    }
+
+    await page.close().catch(() => {}); // el handler hace el resto
+
+    // refrescar sesión (por si el handler creó blank / cambió active)
+    const s2 = await this.getSession(sessionId);
+
+    return { ok: true, activeTabId: s2.activeTabId, tabsCount: s2.pages.size };
+  }
+
   async forceCookieCheck(
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
   ): Promise<{ isLoggedIn: boolean; authToken: string | null }> {
