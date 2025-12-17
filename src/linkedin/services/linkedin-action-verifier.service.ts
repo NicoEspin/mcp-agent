@@ -37,6 +37,8 @@ export type LinkedinActionVerification = {
   rawModelText?: string;
 };
 
+export type BurstShot = { base64: string; mimeType: string; ts: number };
+
 @Injectable()
 export class LinkedinActionVerifierService {
   private readonly logger = new Logger(LinkedinActionVerifierService.name);
@@ -116,7 +118,6 @@ export class LinkedinActionVerifierService {
   }) {
     const { action, profileUrl, message, note } = args;
 
-    // Contexto corto del result (no mandes cosas gigantes)
     const resultHint = args.actionResult
       ? `\n\nContexto adicional (resumen del resultado previo):\n${JSON.stringify(
           {
@@ -180,34 +181,45 @@ Perfil: ${profileUrl ?? 'N/A'}
     return `${base}\n\n${perAction}${resultHint}`;
   }
 
-  private async captureBurst(sessionId: SessionId) {
-    const shots: { base64: string; mimeType: string; ts: number }[] = [];
+  // ✅ public + configurable (preDelay helps ensure message/thread is visible)
+  async captureBurstForVerification(
+    sessionId: SessionId,
+    opts?: { preDelayMs?: number; intervalMs?: number; count?: number },
+  ): Promise<BurstShot[]> {
+    const shots: BurstShot[] = [];
     const start = Date.now();
 
-    // 3 capturas en ~4s: t=0, t=2s, t=4s
-    for (const offset of [0, 2000, 2000]) {
-      if (offset) await this.sleep(offset);
+    const preDelayMs = opts?.preDelayMs ?? 650; // important for send_message/read_chat UI settle
+    const intervalMs = opts?.intervalMs ?? 1750;
+    const count = opts?.count ?? 3;
 
+    if (preDelayMs) await this.sleep(preDelayMs);
+
+    for (let i = 0; i < count; i++) {
       const ts = Date.now();
       const { data, mimeType } =
         await this.stream.forceScreenshotBase64(sessionId);
+
       shots.push({ base64: data, mimeType: mimeType ?? 'image/jpeg', ts });
 
       this.logger.debug(
-        `burst screenshot session=${sessionId} at +${ts - start}ms mime=${mimeType} size=${data?.length ?? 0}`,
+        `burst screenshot session=${sessionId} #${i + 1}/${count} at +${ts - start}ms mime=${mimeType} size=${data?.length ?? 0}`,
       );
+
+      if (i < count - 1) await this.sleep(intervalMs);
     }
 
     return shots;
   }
 
-  async verifyAfterAction(args: {
+  async verifyWithShots(args: {
     sessionId: SessionId;
     action: LinkedinActionName;
     profileUrl?: string;
     message?: string;
     note?: string;
     actionResult?: any;
+    shots: BurstShot[];
   }): Promise<LinkedinActionVerification> {
     const model = 'gpt-5-nano';
     const apiKey = this.config.get<string>('OPENAI_API_KEY');
@@ -234,12 +246,10 @@ Perfil: ${profileUrl ?? 'N/A'}
     }
 
     try {
-      const shots = await this.captureBurst(args.sessionId);
-
       const prompt = this.buildPrompt(args);
 
       const content: any[] = [{ type: 'text', text: prompt }];
-      for (const s of shots) {
+      for (const s of args.shots) {
         content.push({
           type: 'image_url',
           image_url: { url: `data:${s.mimeType};base64,${s.base64}` },
@@ -263,7 +273,7 @@ Perfil: ${profileUrl ?? 'N/A'}
       const parsed = this.safeJsonParse(rawText) ?? {};
       const norm = this.normalize(parsed);
 
-      const totalChars = shots.reduce(
+      const totalChars = args.shots.reduce(
         (acc, s) => acc + (s.base64?.length ?? 0),
         0,
       );
@@ -282,9 +292,9 @@ Perfil: ${profileUrl ?? 'N/A'}
         human_reason: norm.human_reason,
 
         screenshots: {
-          count: shots.length,
-          capturedAt: shots.map((s) => s.ts),
-          mimeTypes: shots.map((s) => s.mimeType),
+          count: args.shots.length,
+          capturedAt: args.shots.map((s) => s.ts),
+          mimeTypes: args.shots.map((s) => s.mimeType),
           totalBase64Chars: totalChars,
         },
 
@@ -294,9 +304,60 @@ Perfil: ${profileUrl ?? 'N/A'}
       };
     } catch (e: any) {
       this.logger.warn(
+        `verifyWithShots failed action=${args.action} session=${args.sessionId}: ${e?.message ?? e}`,
+      );
+
+      return {
+        ok: false,
+        action: args.action,
+        sessionId: args.sessionId,
+
+        completed: false,
+        confidence: 0,
+        details: e?.message ?? 'Verification error',
+        signals: ['verifier_error'],
+
+        is_human_required: false,
+        human_reason: null,
+
+        screenshots: {
+          count: 0,
+          capturedAt: [],
+          mimeTypes: [],
+          totalBase64Chars: 0,
+        },
+        model,
+      };
+    }
+  }
+
+  async verifyAfterAction(args: {
+    sessionId: SessionId;
+    action: LinkedinActionName;
+    profileUrl?: string;
+    message?: string;
+    note?: string;
+    actionResult?: any;
+  }): Promise<LinkedinActionVerification> {
+    try {
+      // ✅ burst first (with UI settle), then OpenAI scoring
+      const shots = await this.captureBurstForVerification(args.sessionId, {
+        // You can tweak per action if you want:
+        preDelayMs: args.action === 'send_message' ? 800 : 650,
+        intervalMs: 1750,
+        count: 3,
+      });
+
+      return await this.verifyWithShots({
+        ...args,
+        shots,
+      });
+    } catch (e: any) {
+      this.logger.warn(
         `verifyAfterAction failed action=${args.action} session=${args.sessionId}: ${e?.message ?? e}`,
       );
 
+      const model = 'gpt-5-nano';
       return {
         ok: false,
         action: args.action,

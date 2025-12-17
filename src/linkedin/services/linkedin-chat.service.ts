@@ -10,6 +10,129 @@ export class LinkedinChatService {
   private readonly logger = new Logger(LinkedinChatService.name);
 
   constructor(private readonly playwright: PlaywrightService) {}
+  private buildCloseChatCode() {
+    return `
+async (page) => {
+  const debug = (msg) => console.log('[close-chat]', msg, 'url=', page.url());
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const firstVisible = async (loc) => {
+    const n = await loc.count();
+    for (let i = 0; i < n; i++) {
+      const el = loc.nth(i);
+      try {
+        if (await el.isVisible()) return el;
+      } catch {}
+    }
+    return null;
+  };
+
+  const iconSel = 'svg[data-test-icon="close-small"], use[href="#close-small"]';
+
+  // Prefer overlay root to avoid clicking random close icons elsewhere
+  const overlayRoot = page.locator(
+    '.msg-overlay-container, .msg-overlay-list-bubble, .msg-overlay-conversation-bubble'
+  ).first();
+
+  // Prefer: last visible bubble (most likely the one we opened)
+  const bubble = page.locator('.msg-overlay-conversation-bubble:visible').last();
+
+  // Capture a "before" snapshot of visible bubbles (best-effort)
+  const beforeVisibleBubbles = await page.locator('.msg-overlay-conversation-bubble:visible').count().catch(() => 0);
+
+  const candidates = [];
+
+  // 1) Bubble scoped close control with icon
+  candidates.push(
+    bubble
+      .locator('button.msg-overlay-bubble-header__control')
+      .filter({ has: bubble.locator(iconSel) })
+  );
+
+  // 2) Bubble scoped aria-label (dynamic name)
+  candidates.push(
+    bubble.locator(
+      [
+        'button[aria-label^="Cierra tu conversación"]',
+        'button[aria-label^="Close your conversation"]',
+        'button[aria-label^="Cerrar conversación"]',
+        'button[aria-label^="Close conversation"]',
+      ].join(', ')
+    )
+  );
+
+  // 3) Global (but still messaging-related): header control w/ icon
+  candidates.push(
+    page
+      .locator('button.msg-overlay-bubble-header__control')
+      .filter({ has: page.locator(iconSel) })
+  );
+
+  // 4) Role/name fallback (still specific text)
+  candidates.push(
+    page.getByRole('button', {
+      name: /cierra tu conversación|close your conversation|cerrar conversación|close conversation/i,
+    })
+  );
+
+  // 5) Icon-only fallback BUT scoped to overlay area only
+  candidates.push(
+    overlayRoot
+      .locator('button')
+      .filter({ has: overlayRoot.locator('svg[data-test-icon="close-small"]') })
+  );
+  candidates.push(
+    overlayRoot
+      .locator('button')
+      .filter({ has: overlayRoot.locator('use[href="#close-small"]') })
+  );
+
+  let clicked = false;
+
+  for (const loc of candidates) {
+    const btn = await firstVisible(loc);
+    if (!btn) continue;
+
+    try {
+      await debug('Found close candidate -> clicking');
+      await btn.scrollIntoViewIfNeeded().catch(() => {});
+      await btn.click({ timeout: 8000, force: true });
+      clicked = true;
+      break;
+    } catch {
+      await debug('Click failed, trying next candidate');
+    }
+  }
+
+  if (!clicked) {
+    await debug('No close button found -> ESC fallback');
+    try {
+      await page.keyboard.press('Escape');
+      await sleep(120);
+      await page.keyboard.press('Escape');
+    } catch {}
+  }
+
+  await sleep(250);
+
+  // After-state checks:
+  const afterVisibleBubbles = await page.locator('.msg-overlay-conversation-bubble:visible').count().catch(() => beforeVisibleBubbles);
+
+  // Also check if the bubble we targeted is still visible (best-effort)
+  const bubbleStillVisible = await bubble.isVisible().catch(() => false);
+
+  // Consider it "closed" if bubble count decreased OR targeted bubble disappeared
+  const closed = (!bubbleStillVisible) || (afterVisibleBubbles < beforeVisibleBubbles);
+
+  return { ok: true, clicked, closed, beforeVisibleBubbles, afterVisibleBubbles };
+}
+`;
+  }
+
+  async closeChatOverlay(sessionId: string) {
+    const code = this.buildCloseChatCode();
+    return this.playwright.runCode(code, sessionId);
+  }
 
   private buildReadChatCode(
     profileUrl: string,
@@ -209,7 +332,7 @@ return JSON.stringify(result);
   ) {
     const startTime = Date.now();
     const code = this.buildReadChatCode(profileUrl, limit, threadHint);
-    
+
     const verboseResult = {
       ok: true,
       profileUrl,
@@ -224,22 +347,32 @@ return JSON.stringify(result);
         codeLength: code.length,
         fallbackAttempts: 0,
         steps: [] as string[],
-        errors: [] as any[]
+        errors: [] as any[],
       },
       data: null as any,
       toolResult: null as any,
     };
 
     try {
-      verboseResult.executionDetails.steps.push('Generated JavaScript code for Playwright execution');
-      verboseResult.executionDetails.steps.push(`Code length: ${code.length} characters`);
-      verboseResult.executionDetails.steps.push('Starting Playwright runCode execution');
+      verboseResult.executionDetails.steps.push(
+        'Generated JavaScript code for Playwright execution',
+      );
+      verboseResult.executionDetails.steps.push(
+        `Code length: ${code.length} characters`,
+      );
+      verboseResult.executionDetails.steps.push(
+        'Starting Playwright runCode execution',
+      );
 
       const result = await this.playwright.runCode(code, sessionId);
 
-      verboseResult.executionDetails.steps.push('Playwright execution completed successfully');
-      verboseResult.executionDetails.steps.push(`Messages extracted: ${result?.messages?.length || 0}`);
-      
+      verboseResult.executionDetails.steps.push(
+        'Playwright execution completed successfully',
+      );
+      verboseResult.executionDetails.steps.push(
+        `Messages extracted: ${result?.messages?.length || 0}`,
+      );
+
       const endTime = Date.now();
       verboseResult.executionDetails.endTime = endTime;
       verboseResult.executionDetails.executionTimeMs = endTime - startTime;
@@ -247,9 +380,11 @@ return JSON.stringify(result);
       // Result is already the parsed data from the page evaluation
       verboseResult.data = result;
       verboseResult.toolResult = result;
-      
-      this.logger.debug(`readChat completed successfully in ${verboseResult.executionDetails.executionTimeMs}ms`);
-      
+
+      this.logger.debug(
+        `readChat completed successfully in ${verboseResult.executionDetails.executionTimeMs}ms`,
+      );
+
       return verboseResult;
     } catch (e: any) {
       const endTime = Date.now();
@@ -258,19 +393,21 @@ return JSON.stringify(result);
       verboseResult.executionDetails.errors.push({
         message: e?.message ?? 'Unknown error',
         stack: e?.stack,
-        timestamp: endTime
+        timestamp: endTime,
       });
-      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
+      verboseResult.executionDetails.steps.push(
+        `Error occurred: ${e?.message ?? 'Unknown error'}`,
+      );
 
       this.logger.warn(`readChat failed: ${e?.message ?? e}`);
-      
-      return { 
-        ok: false, 
+
+      return {
+        ok: false,
         error: e?.message ?? 'Unknown error',
         executionDetails: verboseResult.executionDetails,
         profileUrl,
         limit,
-        sessionId
+        sessionId,
       };
     }
   }
@@ -283,7 +420,7 @@ return JSON.stringify(result);
   // -----------------------------
   async sendMessage(sessionId: SessionId, profileUrl: string, message: string) {
     const startTime = Date.now();
-    
+
     const verboseResult = {
       ok: true,
       profileUrl,
@@ -298,7 +435,7 @@ return JSON.stringify(result);
         fallbackAttempts: 0,
         steps: [] as string[],
         errors: [] as any[],
-        playwrightLogs: [] as string[]
+        playwrightLogs: [] as string[],
       },
       note: null as string | null,
       result: null as any,
@@ -306,8 +443,12 @@ return JSON.stringify(result);
 
     // Direct Playwright execution - no tool checking needed
     verboseResult.executionDetails.steps.push('Starting sendMessage execution');
-    verboseResult.executionDetails.steps.push(`Message length: ${message.length} characters`);
-    verboseResult.executionDetails.steps.push('Building Playwright execution code');
+    verboseResult.executionDetails.steps.push(
+      `Message length: ${message.length} characters`,
+    );
+    verboseResult.executionDetails.steps.push(
+      'Building Playwright execution code',
+    );
 
     const code = `
 async (page) => {
@@ -544,16 +685,22 @@ async (page) => {
 `;
 
     try {
-      verboseResult.executionDetails.steps.push(`Code length: ${code.length} characters`);
+      verboseResult.executionDetails.steps.push(
+        `Code length: ${code.length} characters`,
+      );
       verboseResult.executionDetails.steps.push('Executing Playwright code');
-      
+
       const result = await this.playwright.runCode(code, sessionId);
 
       const endTime = Date.now();
       verboseResult.executionDetails.endTime = endTime;
       verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.executionDetails.steps.push('Playwright execution completed successfully');
-      verboseResult.executionDetails.steps.push(`Result: ${JSON.stringify(result)}`);
+      verboseResult.executionDetails.steps.push(
+        'Playwright execution completed successfully',
+      );
+      verboseResult.executionDetails.steps.push(
+        `Result: ${JSON.stringify(result)}`,
+      );
 
       verboseResult.note = 'Mensaje enviado vía Playwright directo.';
       verboseResult.result = result;
@@ -570,19 +717,21 @@ async (page) => {
       verboseResult.executionDetails.errors.push({
         message: e?.message ?? 'Unknown error',
         stack: e?.stack,
-        timestamp: endTime
+        timestamp: endTime,
       });
-      verboseResult.executionDetails.steps.push(`Error occurred: ${e?.message ?? 'Unknown error'}`);
+      verboseResult.executionDetails.steps.push(
+        `Error occurred: ${e?.message ?? 'Unknown error'}`,
+      );
 
       this.logger.warn(`sendMessage failed: ${e?.message ?? 'Unknown error'}`);
-      
-      return { 
-        ok: false, 
+
+      return {
+        ok: false,
         error: e?.message ?? 'Unknown error',
         executionDetails: verboseResult.executionDetails,
         profileUrl,
         messagePreview: message.slice(0, 80),
-        sessionId
+        sessionId,
       };
     }
   }

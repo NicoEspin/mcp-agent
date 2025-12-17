@@ -8,15 +8,35 @@ import { SendConnectionDto } from './dto/send-connection.dto';
 import { CheckConnectionDto } from './dto/check-connection.dto';
 import { ReadChatDto } from './dto/read-chat.dto';
 import { LinkedinActionVerifierService } from './services/linkedin-action-verifier.service';
+import { LinkedinChatService } from './services/linkedin-chat.service';
 
 @Controller('linkedin')
 export class LinkedinController {
+  // ✅ serialize everything per sessionId to avoid interleaving UI steps
+  private readonly sessionLocks = new Map<string, Promise<any>>();
+
   constructor(
     private readonly linkedin: LinkedinService,
     private readonly playwright: PlaywrightService,
     private readonly sessionService: LinkedinSessionService,
     private readonly verifier: LinkedinActionVerifierService,
+    private readonly chat: LinkedinChatService, // ✅ close logic lives in chat-service
   ) {}
+
+  private async withSessionLock<T>(sessionId: string, fn: () => Promise<T>) {
+    const prev = this.sessionLocks.get(sessionId) ?? Promise.resolve();
+
+    const next = prev.then(fn, fn);
+    this.sessionLocks.set(sessionId, next);
+
+    try {
+      return await next;
+    } finally {
+      if (this.sessionLocks.get(sessionId) === next) {
+        this.sessionLocks.delete(sessionId);
+      }
+    }
+  }
 
   // -------------------
   // read-chat (POST)
@@ -25,21 +45,41 @@ export class LinkedinController {
   async readChat(@Body() dto: ReadChatDto) {
     const sessionId = dto.sessionId ?? 'default';
 
-    const actionResult = await this.linkedin.readChat(
-      sessionId,
-      dto.profileUrl,
-      dto.limit ?? 30,
-      dto.threadHint,
-    );
+    return this.withSessionLock(sessionId, async () => {
+      const actionResult = await this.linkedin.readChat(
+        sessionId,
+        dto.profileUrl,
+        dto.limit ?? 30,
+        dto.threadHint,
+      );
 
-    const verification = await this.verifier.verifyAfterAction({
-      sessionId,
-      action: 'read_chat',
-      profileUrl: dto.profileUrl,
-      actionResult,
+      // ✅ verification FIRST
+      const verification = await this.verifier.verifyAfterAction({
+        sessionId,
+        action: 'read_chat',
+        profileUrl: dto.profileUrl,
+        actionResult,
+      });
+
+      // ✅ close AFTER verification (implemented in chat-service)
+      let closeChat: any = null;
+
+      if (verification?.is_human_required) {
+        closeChat = {
+          ok: true,
+          skipped: true,
+          reason: verification.human_reason ?? 'human_required',
+        };
+      } else {
+        try {
+          closeChat = await this.chat.closeChatOverlay(sessionId);
+        } catch (e: any) {
+          closeChat = { ok: false, error: e?.message ?? String(e) };
+        }
+      }
+
+      return { ...actionResult, verification, closeChat };
     });
-
-    return { ...actionResult, verification };
   }
 
   // -------------------
@@ -49,21 +89,41 @@ export class LinkedinController {
   async sendMessage(@Body() dto: SendMessageDto) {
     const sessionId = dto.sessionId ?? 'default';
 
-    const actionResult = await this.linkedin.sendMessage(
-      sessionId,
-      dto.profileUrl,
-      dto.message,
-    );
+    return this.withSessionLock(sessionId, async () => {
+      const actionResult = await this.linkedin.sendMessage(
+        sessionId,
+        dto.profileUrl,
+        dto.message,
+      );
 
-    const verification = await this.verifier.verifyAfterAction({
-      sessionId,
-      action: 'send_message',
-      profileUrl: dto.profileUrl,
-      message: dto.message,
-      actionResult,
+      // ✅ verification FIRST
+      const verification = await this.verifier.verifyAfterAction({
+        sessionId,
+        action: 'send_message',
+        profileUrl: dto.profileUrl,
+        message: dto.message,
+        actionResult,
+      });
+
+      // ✅ close AFTER verification (implemented in chat-service)
+      let closeChat: any = null;
+
+      if (verification?.is_human_required) {
+        closeChat = {
+          ok: true,
+          skipped: true,
+          reason: verification.human_reason ?? 'human_required',
+        };
+      } else {
+        try {
+          closeChat = await this.chat.closeChatOverlay(sessionId);
+        } catch (e: any) {
+          closeChat = { ok: false, error: e?.message ?? String(e) };
+        }
+      }
+
+      return { ...actionResult, verification, closeChat };
     });
-
-    return { ...actionResult, verification };
   }
 
   // -------------------
@@ -73,21 +133,24 @@ export class LinkedinController {
   async sendConnection(@Body() dto: SendConnectionDto) {
     const sessionId = dto.sessionId ?? 'default';
 
-    const actionResult = await this.linkedin.sendConnection(
-      sessionId,
-      dto.profileUrl,
-      dto.note,
-    );
+    // (doesn't open chat drawer, so no close needed)
+    return this.withSessionLock(sessionId, async () => {
+      const actionResult = await this.linkedin.sendConnection(
+        sessionId,
+        dto.profileUrl,
+        dto.note,
+      );
 
-    const verification = await this.verifier.verifyAfterAction({
-      sessionId,
-      action: 'send_connection',
-      profileUrl: dto.profileUrl,
-      note: dto.note,
-      actionResult,
+      const verification = await this.verifier.verifyAfterAction({
+        sessionId,
+        action: 'send_connection',
+        profileUrl: dto.profileUrl,
+        note: dto.note,
+        actionResult,
+      });
+
+      return { ...actionResult, verification };
     });
-
-    return { ...actionResult, verification };
   }
 
   // -------------------
@@ -96,19 +159,16 @@ export class LinkedinController {
   @Post('check-connection')
   async checkConnection(@Body() dto: CheckConnectionDto): Promise<any> {
     const sessionId = dto.sessionId ?? 'default';
-    return this.linkedin.checkConnection(sessionId, dto.profileUrl);
+    return this.withSessionLock(sessionId, () =>
+      this.linkedin.checkConnection(sessionId, dto.profileUrl),
+    );
   }
 
   // -------------------
   // open (POST)
   // -------------------
   @Post('open')
-  async open(
-    @Body()
-    body?: {
-      sessionId?: string;
-    },
-  ) {
+  async open(@Body() body?: { sessionId?: string }) {
     const sessionId = body?.sessionId ?? 'default';
     const startTime = Date.now();
     const targetUrl = 'https://www.linkedin.com/';
@@ -128,53 +188,55 @@ export class LinkedinController {
       },
     };
 
-    try {
-      verboseResult.executionDetails.steps.push(
-        `Starting LinkedIn open for session: ${sessionId}`,
-      );
-      verboseResult.executionDetails.steps.push(`Target URL: ${targetUrl}`);
-      verboseResult.executionDetails.steps.push(
-        'Initiating Playwright navigation (will force Chromium open if in headed mode)',
-      );
+    return this.withSessionLock(sessionId, async () => {
+      try {
+        verboseResult.executionDetails.steps.push(
+          `Starting LinkedIn open for session: ${sessionId}`,
+        );
+        verboseResult.executionDetails.steps.push(`Target URL: ${targetUrl}`);
+        verboseResult.executionDetails.steps.push(
+          'Initiating Playwright navigation (will force Chromium open if in headed mode)',
+        );
 
-      await this.playwright.navigate(targetUrl, sessionId);
+        await this.playwright.navigate(targetUrl, sessionId);
 
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.executionDetails.steps.push(
-        `Navigation completed successfully in ${verboseResult.executionDetails.executionTimeMs}ms`,
-      );
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.executionDetails.steps.push(
+          `Navigation completed successfully in ${verboseResult.executionDetails.executionTimeMs}ms`,
+        );
 
-      const verification = await this.verifier.verifyAfterAction({
-        sessionId,
-        action: 'open',
-        actionResult: verboseResult,
-      });
+        const verification = await this.verifier.verifyAfterAction({
+          sessionId,
+          action: 'open',
+          actionResult: verboseResult,
+        });
 
-      return { ...verboseResult, verification };
-    } catch (e: any) {
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.success = false;
-      verboseResult.executionDetails.errors.push({
-        message: e?.message ?? 'Unknown error',
-        stack: e?.stack,
-        timestamp: endTime,
-      });
-      verboseResult.executionDetails.steps.push(
-        `Navigation failed: ${e?.message ?? 'Unknown error'}`,
-      );
+        return { ...verboseResult, verification };
+      } catch (e: any) {
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.success = false;
+        verboseResult.executionDetails.errors.push({
+          message: e?.message ?? 'Unknown error',
+          stack: e?.stack,
+          timestamp: endTime,
+        });
+        verboseResult.executionDetails.steps.push(
+          `Navigation failed: ${e?.message ?? 'Unknown error'}`,
+        );
 
-      const verification = await this.verifier.verifyAfterAction({
-        sessionId,
-        action: 'open',
-        actionResult: verboseResult,
-      });
+        const verification = await this.verifier.verifyAfterAction({
+          sessionId,
+          action: 'open',
+          actionResult: verboseResult,
+        });
 
-      return { ...verboseResult, verification };
-    }
+        return { ...verboseResult, verification };
+      }
+    });
   }
 
   // -------------------
@@ -190,12 +252,7 @@ export class LinkedinController {
   // stop-session (POST)
   // -------------------
   @Post('stop-session')
-  async stopSession(
-    @Body()
-    body: {
-      sessionId?: string;
-    },
-  ) {
+  async stopSession(@Body() body: { sessionId?: string }) {
     const sessionId = body?.sessionId ?? 'default';
     const startTime = Date.now();
 
@@ -213,63 +270,63 @@ export class LinkedinController {
       },
     };
 
-    try {
-      verboseResult.executionDetails.steps.push(
-        `Starting session cleanup for: ${sessionId}`,
-      );
-
-      const result = await this.playwright.stopSession(sessionId);
-
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.success = result.success;
-      verboseResult.message = result.message;
-
-      if (result.success) {
+    return this.withSessionLock(sessionId, async () => {
+      try {
         verboseResult.executionDetails.steps.push(
-          `Session stopped successfully: ${result.message}`,
+          `Starting session cleanup for: ${sessionId}`,
         );
-      } else {
-        verboseResult.executionDetails.steps.push(
-          `Session stop failed: ${result.message}`,
-        );
+
+        const result = await this.playwright.stopSession(sessionId);
+
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.success = result.success;
+        verboseResult.message = result.message;
+
+        if (result.success) {
+          verboseResult.executionDetails.steps.push(
+            `Session stopped successfully: ${result.message}`,
+          );
+        } else {
+          verboseResult.executionDetails.steps.push(
+            `Session stop failed: ${result.message}`,
+          );
+          verboseResult.executionDetails.errors.push({
+            message: result.message,
+            timestamp: endTime,
+          });
+        }
+
+        const verification = await this.verifier.verifyAfterAction({
+          sessionId,
+          action: 'open', // optional (your existing behavior)
+          actionResult: verboseResult,
+        });
+
+        return { ...verboseResult, verification };
+      } catch (e: any) {
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
         verboseResult.executionDetails.errors.push({
-          message: result.message,
+          message: e?.message ?? 'Unknown error',
+          stack: e?.stack,
           timestamp: endTime,
         });
+        verboseResult.executionDetails.steps.push(
+          `Error occurred: ${e?.message ?? 'Unknown error'}`,
+        );
+        verboseResult.message = e?.message ?? 'Unknown error';
+
+        const verification = await this.verifier.verifyAfterAction({
+          sessionId,
+          action: 'open',
+          actionResult: verboseResult,
+        });
+
+        return { ...verboseResult, verification };
       }
-
-      // ✅ también verificamos stop-session (no dijiste excluirlo)
-      const verification = await this.verifier.verifyAfterAction({
-        sessionId,
-        action: 'open', // 👈 opcional: o no verificar stop-session
-        actionResult: verboseResult,
-      });
-
-      return { ...verboseResult, verification };
-    } catch (e: any) {
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.executionDetails.errors.push({
-        message: e?.message ?? 'Unknown error',
-        stack: e?.stack,
-        timestamp: endTime,
-      });
-      verboseResult.executionDetails.steps.push(
-        `Error occurred: ${e?.message ?? 'Unknown error'}`,
-      );
-      verboseResult.message = e?.message ?? 'Unknown error';
-
-      // incluso en error, podemos verificar para ver si quedó en login/captcha etc.
-      const verification = await this.verifier.verifyAfterAction({
-        sessionId,
-        action: 'open',
-        actionResult: verboseResult,
-      });
-
-      return { ...verboseResult, verification };
-    }
+    });
   }
 }
