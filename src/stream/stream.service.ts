@@ -20,10 +20,7 @@ export class StreamService {
 
   constructor(private readonly playwright: PlaywrightService) {}
 
-  private enqueueInput<T>(
-    sessionId: SessionId,
-    task: () => Promise<T>,
-  ): Promise<T> {
+  private enqueueInput<T>(sessionId: SessionId, task: () => Promise<T>): Promise<T> {
     const prev = this.inputChain.get(sessionId) ?? Promise.resolve();
 
     let resolve!: (v: T) => void;
@@ -44,10 +41,7 @@ export class StreamService {
       });
 
     // la cadena guarda "void" para mantener el orden
-    this.inputChain.set(
-      sessionId,
-      next.then(() => {}),
-    );
+    this.inputChain.set(sessionId, next.then(() => {}));
     return out;
   }
 
@@ -125,9 +119,7 @@ export class StreamService {
     });
   }
 
-  async getScreenshotBase64(
-    sessionId: SessionId = 'default',
-  ): Promise<ScreenshotResult> {
+  async getScreenshotBase64(sessionId: SessionId = 'default'): Promise<ScreenshotResult> {
     // ✅ If there's already a screenshot in progress, wait for it
     const existing = this.inFlight.get(sessionId);
     if (existing) return existing;
@@ -138,11 +130,12 @@ export class StreamService {
           { type: 'jpeg', fullPage: false },
           sessionId,
         );
+
         this.lastFrames.set(sessionId, { ...screenshot, ts: Date.now() });
         this.invalidatedAt.delete(sessionId); // Clear invalidation flag
         return screenshot;
       } catch (error: any) {
-        const errorMessage = error.message || String(error);
+        const errorMessage = error?.message || String(error);
 
         // Check if this is a browser closure error
         if (this.isBrowserClosureError(errorMessage)) {
@@ -152,26 +145,27 @@ export class StreamService {
 
           // Try one more time after browser recovery
           try {
-            // Force browser recovery by calling takeScreenshot again
-            // The PlaywrightService will handle session recovery automatically
             const screenshot = await this.playwright.takeScreenshot(
               { type: 'jpeg', fullPage: false },
               sessionId,
             );
+
             this.lastFrames.set(sessionId, { ...screenshot, ts: Date.now() });
             this.invalidatedAt.delete(sessionId);
             this.logger.log(`Browser recovery successful for ${sessionId}`);
             return screenshot;
           } catch (retryError: any) {
             this.logger.error(
-              `Browser recovery failed for ${sessionId}: ${retryError.message}`,
+              `Browser recovery failed for ${sessionId}: ${retryError?.message ?? retryError}`,
             );
+
             // Fall back to cached frame only after recovery attempt fails
             const last = this.lastFrames.get(sessionId);
             if (last) {
               this.logger.warn(
                 `Using cached frame after recovery failure for ${sessionId}`,
               );
+              this.invalidatedAt.delete(sessionId); // ✅ avoid hammering refresh loops
               return { data: last.data, mimeType: last.mimeType };
             }
             throw retryError;
@@ -184,8 +178,10 @@ export class StreamService {
           this.logger.warn(
             `Screenshot failed for ${sessionId}, using cached frame: ${errorMessage}`,
           );
+          this.invalidatedAt.delete(sessionId); // ✅ avoid hammering refresh loops
           return { data: last.data, mimeType: last.mimeType };
         }
+
         throw error;
       }
     })();
@@ -198,9 +194,7 @@ export class StreamService {
     }
   }
 
-  async forceScreenshotBase64(
-    sessionId: SessionId = 'default',
-  ): Promise<ScreenshotResult> {
+  async forceScreenshotBase64(sessionId: SessionId = 'default'): Promise<ScreenshotResult> {
     const existing = this.inFlight.get(sessionId);
     if (existing) {
       try {
@@ -244,6 +238,7 @@ export class StreamService {
       const { data, mimeType } = last;
       return { data, mimeType };
     }
+
     return this.getScreenshotBase64(sessionId);
   }
 }

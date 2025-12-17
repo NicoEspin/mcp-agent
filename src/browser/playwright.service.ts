@@ -52,7 +52,7 @@ interface BrowserSession {
 
   lastUsedAt: number;
 }
-
+type ScreenshotBytesResult = { bytes: Buffer; mimeType: string };
 interface ScreenshotResult {
   data: string;
   mimeType: string;
@@ -863,8 +863,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     // ✅ si el context crea páginas por scripts/popup, también las registramos
     context.on('page', (p) => {
       if (this.getSessionGen(sessionId) !== gen) return;
-      this.registerPage(sessionId, session!, gen, p, true);
-      void p.bringToFront().catch(() => {});
+      this.registerPage(sessionId, session!, gen, p, false);
     });
 
     // ✅ registrar la primera tab y dejarla activa
@@ -940,74 +939,6 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
   /**
    * Continuously monitor LinkedIn cookies after navigation
    */
-  private async monitorLinkedInCookies(
-    sessionId: SessionId,
-    context: BrowserContext,
-    wasLoggedInBefore: boolean,
-  ): Promise<void> {
-    try {
-      const checkpoints = [2000, 5000, 10000, 15000, 30000];
-
-      for (const delay of checkpoints) {
-        setTimeout(async () => {
-          try {
-            // ✅ persistir state (no cookies)
-            await this.storageState.saveState(sessionId, context, {
-              requireLiAt: false,
-            });
-
-            const isLoggedInNow = await this.isLinkedInLoggedIn(sessionId);
-
-            if (!wasLoggedInBefore && isLoggedInNow) {
-              const authToken = await this.getLinkedInAuthToken(sessionId);
-              this.logger.log(
-                `🔐 LinkedIn login detected for session ${sessionId} (li_at: ${authToken?.slice(0, 10)}...)`,
-              );
-            } else if (wasLoggedInBefore && !isLoggedInNow) {
-              this.logger.warn(
-                `🚪 LinkedIn logout detected for session ${sessionId}`,
-              );
-            }
-
-            this.logger.debug(
-              `LinkedIn auth status check (${delay}ms): ${isLoggedInNow} (session: ${sessionId})`,
-            );
-          } catch (error) {
-            this.logger.warn(
-              `Cookie monitoring failed at ${delay}ms for session ${sessionId}: ${error}`,
-            );
-          }
-        }, delay);
-      }
-    } catch (error) {
-      this.logger.warn(
-        `Failed to start cookie monitoring for session ${sessionId}: ${error}`,
-      );
-    }
-  }
-
-  /**
-   * Save cookies after a delay to ensure they're set
-   * @deprecated Use monitorLinkedInCookies instead
-   */
-  private async saveCookiesAfterDelay(
-    sessionId: SessionId,
-    context: BrowserContext,
-    delay: number = 2000,
-  ): Promise<void> {
-    setTimeout(async () => {
-      try {
-        await this.storageState.saveState(sessionId, context, {
-          requireLiAt: false,
-        });
-      } catch (error) {
-        this.logger.warn(
-          `Failed to save storageState for session ${sessionId}: ${error}`,
-        );
-      }
-    }, delay);
-  }
-
   async runCode(
     code: string,
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
@@ -1034,24 +965,45 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     return result;
   }
 
-  async takeScreenshot(
-    options: { type?: 'png' | 'jpeg'; fullPage?: boolean } = {},
+  async takeScreenshotBytes(
+    options: {
+      type?: 'png' | 'jpeg';
+      fullPage?: boolean;
+      quality?: number;
+    } = {},
     sessionId: SessionId = this.DEFAULT_SESSION_ID,
-  ): Promise<ScreenshotResult> {
+  ): Promise<ScreenshotBytesResult> {
     const session = await this.getSession(sessionId);
 
-    const screenshotOptions = {
-      type: options.type || 'jpeg',
-      fullPage: options.fullPage || false,
+    const type = options.type ?? 'jpeg';
+    const fullPage = options.fullPage ?? false;
+
+    // quality solo aplica a jpeg
+    const screenshotOptions: any = {
+      type,
+      fullPage,
+      animations: 'disabled', // reduce “ruido” y a veces acelera
     };
+    if (type === 'jpeg') screenshotOptions.quality = options.quality ?? 70;
 
     const buffer = await session.page.screenshot(screenshotOptions);
-    const base64 = buffer.toString('base64');
 
-    return {
-      data: base64,
-      mimeType: `image/${screenshotOptions.type}`,
-    };
+    return { bytes: buffer, mimeType: `image/${type}` };
+  }
+  // ✅ compat: lo que ya usa tu código (base64)
+  async takeScreenshot(
+    options: {
+      type?: 'png' | 'jpeg';
+      fullPage?: boolean;
+      quality?: number;
+    } = {},
+    sessionId: SessionId = this.DEFAULT_SESSION_ID,
+  ): Promise<ScreenshotResult> {
+    const { bytes, mimeType } = await this.takeScreenshotBytes(
+      options,
+      sessionId,
+    );
+    return { data: bytes.toString('base64'), mimeType };
   }
 
   async getSnapshot(
