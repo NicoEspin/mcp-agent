@@ -11,6 +11,7 @@ import { StreamModule } from '../stream/stream.module';
 import { LinkedinChatService } from './services/linkedin-chat.service';
 import { LinkedinConnectionService } from './services/linkedin-connection.service';
 import { LinkedinActionVerifierService } from './services/linkedin-action-verifier.service';
+import { LinkedinSalesNavigatorService } from './services/linkedin-sales-navigator.service';
 
 @Module({
   imports: [BrowserModule, StreamModule],
@@ -22,6 +23,7 @@ import { LinkedinActionVerifierService } from './services/linkedin-action-verifi
     LinkedinSessionService,
     LinkedinSessionGuard,
     LinkedinActionVerifierService,
+    LinkedinSalesNavigatorService,
   ],
 })
 export class LinkedinModule {}

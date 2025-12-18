@@ -9,6 +9,7 @@ import { CheckConnectionDto } from './dto/check-connection.dto';
 import { ReadChatDto } from './dto/read-chat.dto';
 import { LinkedinActionVerifierService } from './services/linkedin-action-verifier.service';
 import { LinkedinChatService } from './services/linkedin-chat.service';
+import { SendSalesNavMessageDto } from './dto/send-salesnav-message.dto';
 
 @Controller('linkedin')
 export class LinkedinController {
@@ -239,6 +240,30 @@ export class LinkedinController {
     });
   }
 
+@Post('send-salesnav-message')
+async sendSalesNavMessage(@Body() dto: SendSalesNavMessageDto) {
+  const sessionId = dto.sessionId ?? 'default';
+
+  return this.withSessionLock(sessionId, async () => {
+    const actionResult = await this.linkedin.sendSalesNavMessage(
+      sessionId,
+      dto.profileUrl,
+      dto.message,
+      dto.subject,
+    );
+
+    // (Opcional) Reusar verificación como send_message (para no tocar types)
+    const verification = await this.verifier.verifyAfterAction({
+      sessionId,
+      action: 'send_message',
+      profileUrl: dto.profileUrl,
+      message: dto.message,
+      actionResult,
+    });
+
+    return { ...actionResult, verification };
+  });
+}
   // -------------------
   // session-state (GET)
   // -------------------

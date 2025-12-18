@@ -2,12 +2,14 @@
 import { Injectable } from '@nestjs/common';
 import { LinkedinChatService } from './services/linkedin-chat.service';
 import { LinkedinConnectionService } from './services/linkedin-connection.service';
+import { LinkedinSalesNavigatorService } from './services/linkedin-sales-navigator.service';
 
 @Injectable()
 export class LinkedinService {
   constructor(
     private readonly chat: LinkedinChatService,
     private readonly connection: LinkedinConnectionService,
+    private readonly salesNav: LinkedinSalesNavigatorService,
   ) {}
 
   // -------------------------------
@@ -140,5 +142,58 @@ export class LinkedinService {
     const sessionId = 'default';
     const profileUrl = a;
     return this.connection.checkConnection(sessionId, profileUrl);
+  }
+
+  // -------------------------------
+  // sendSalesNavMessage - overload multi-sesión
+  // -------------------------------
+
+  sendSalesNavMessage(
+    profileUrl: string,
+    message: string,
+    subject?: string,
+  ): Promise<any>;
+  sendSalesNavMessage(
+    sessionId: string,
+    profileUrl: string,
+    message: string,
+    subject?: string,
+  ): Promise<any>;
+
+  async sendSalesNavMessage(
+    a: string,
+    b: string,
+    c?: string,
+    d?: string,
+  ): Promise<any> {
+    const looksLikeUrl = (s: string) =>
+      /^https?:\/\//i.test(s) || /linkedin\.com/i.test(s);
+
+    // Legacy: (profileUrl, message, subject?)
+    if (looksLikeUrl(a)) {
+      const sessionId = 'default';
+      const profileUrl = a;
+      const message = b;
+      const subject = c;
+      return this.salesNav.sendSalesNavigatorMessage(
+        sessionId,
+        profileUrl,
+        message,
+        subject,
+      );
+    }
+
+    // Nuevo: (sessionId, profileUrl, message, subject?)
+    const sessionId = a;
+    const profileUrl = b;
+    const message = c ?? '';
+    const subject = d;
+
+    return this.salesNav.sendSalesNavigatorMessage(
+      sessionId,
+      profileUrl,
+      message,
+      subject,
+    );
   }
 }
