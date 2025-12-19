@@ -12,6 +12,8 @@ import { LinkedinChatService } from './services/linkedin-chat.service';
 import { LinkedinConnectionService } from './services/linkedin-connection.service';
 import { LinkedinActionVerifierService } from './services/linkedin-action-verifier.service';
 import { LinkedinSalesNavigatorService } from './services/linkedin-sales-navigator.service';
+import { LinkedinSalesNavigatorChatService } from './services/linkedin-sales-navigator-chat.service';
+import { LinkedinSalesNavigatorConnectionService } from './services/linkedin-sales-navigator-connection.service';
 
 @Module({
   imports: [BrowserModule, StreamModule],
@@ -24,6 +26,8 @@ import { LinkedinSalesNavigatorService } from './services/linkedin-sales-navigat
     LinkedinSessionGuard,
     LinkedinActionVerifierService,
     LinkedinSalesNavigatorService,
+    LinkedinSalesNavigatorChatService,
+    LinkedinSalesNavigatorConnectionService,
   ],
 })
 export class LinkedinModule {}

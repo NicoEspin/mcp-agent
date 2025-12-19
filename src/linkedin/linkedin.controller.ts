@@ -10,6 +10,9 @@ import { ReadChatDto } from './dto/read-chat.dto';
 import { LinkedinActionVerifierService } from './services/linkedin-action-verifier.service';
 import { LinkedinChatService } from './services/linkedin-chat.service';
 import { SendSalesNavMessageDto } from './dto/send-salesnav-message.dto';
+import { ReadSalesNavChatDto } from './dto/read-salesnav-chat.dto';
+import { LinkedinSalesNavigatorChatService } from './services/linkedin-sales-navigator-chat.service';
+import { CheckSalesNavConnectionDto } from './dto/check-salesnav-connection.dto';
 
 @Controller('linkedin')
 export class LinkedinController {
@@ -22,6 +25,7 @@ export class LinkedinController {
     private readonly sessionService: LinkedinSessionService,
     private readonly verifier: LinkedinActionVerifierService,
     private readonly chat: LinkedinChatService, // ✅ close logic lives in chat-service
+    private readonly salesNavChat: LinkedinSalesNavigatorChatService,
   ) {}
 
   private async withSessionLock<T>(sessionId: string, fn: () => Promise<T>) {
@@ -239,31 +243,87 @@ export class LinkedinController {
       }
     });
   }
-
-@Post('send-salesnav-message')
-async sendSalesNavMessage(@Body() dto: SendSalesNavMessageDto) {
-  const sessionId = dto.sessionId ?? 'default';
-
-  return this.withSessionLock(sessionId, async () => {
-    const actionResult = await this.linkedin.sendSalesNavMessage(
-      sessionId,
-      dto.profileUrl,
-      dto.message,
-      dto.subject,
+  // -------------------
+  // check-salesnav-connection (POST)  <-- NO verification (igual regla)
+  // -------------------
+  @Post('check-salesnav-connection')
+  async checkSalesNavConnection(
+    @Body() dto: CheckSalesNavConnectionDto,
+  ): Promise<any> {
+    const sessionId = dto.sessionId ?? 'default';
+    return this.withSessionLock(sessionId, () =>
+      this.linkedin.checkSalesNavConnection(sessionId, dto.profileUrl),
     );
+  }
+  // -------------------
+  // read-salesnav-chat (POST)
+  // -------------------
+  @Post('read-salesnav-chat')
+  async readSalesNavChat(@Body() dto: ReadSalesNavChatDto) {
+    const sessionId = dto.sessionId ?? 'default';
 
-    // (Opcional) Reusar verificación como send_message (para no tocar types)
-    const verification = await this.verifier.verifyAfterAction({
-      sessionId,
-      action: 'send_message',
-      profileUrl: dto.profileUrl,
-      message: dto.message,
-      actionResult,
+    return this.withSessionLock(sessionId, async () => {
+      const actionResult = await this.linkedin.readSalesNavChat(
+        sessionId,
+        dto.profileUrl,
+        dto.limit ?? 30,
+        dto.threadHint,
+      );
+
+      // ✅ verification FIRST (reusamos action='read_chat' para no tocar types)
+      const verification = await this.verifier.verifyAfterAction({
+        sessionId,
+        action: 'read_chat',
+        profileUrl: dto.profileUrl,
+        actionResult,
+      });
+
+      // ✅ close AFTER verification (SalesNav close)
+      let closeChat: any = null;
+
+      if (verification?.is_human_required) {
+        closeChat = {
+          ok: true,
+          skipped: true,
+          reason: verification.human_reason ?? 'human_required',
+        };
+      } else {
+        try {
+          closeChat =
+            await this.salesNavChat.closeSalesNavChatOverlay(sessionId);
+        } catch (e: any) {
+          closeChat = { ok: false, error: e?.message ?? String(e) };
+        }
+      }
+
+      return { ...actionResult, verification, closeChat };
     });
+  }
 
-    return { ...actionResult, verification };
-  });
-}
+  @Post('send-salesnav-message')
+  async sendSalesNavMessage(@Body() dto: SendSalesNavMessageDto) {
+    const sessionId = dto.sessionId ?? 'default';
+
+    return this.withSessionLock(sessionId, async () => {
+      const actionResult = await this.linkedin.sendSalesNavMessage(
+        sessionId,
+        dto.profileUrl,
+        dto.message,
+        dto.subject,
+      );
+
+      // (Opcional) Reusar verificación como send_message (para no tocar types)
+      const verification = await this.verifier.verifyAfterAction({
+        sessionId,
+        action: 'send_message',
+        profileUrl: dto.profileUrl,
+        message: dto.message,
+        actionResult,
+      });
+
+      return { ...actionResult, verification };
+    });
+  }
   // -------------------
   // session-state (GET)
   // -------------------

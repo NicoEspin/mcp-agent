@@ -3,6 +3,8 @@ import { Injectable } from '@nestjs/common';
 import { LinkedinChatService } from './services/linkedin-chat.service';
 import { LinkedinConnectionService } from './services/linkedin-connection.service';
 import { LinkedinSalesNavigatorService } from './services/linkedin-sales-navigator.service';
+import { LinkedinSalesNavigatorChatService } from './services/linkedin-sales-navigator-chat.service';
+import { LinkedinSalesNavigatorConnectionService } from './services/linkedin-sales-navigator-connection.service';
 
 @Injectable()
 export class LinkedinService {
@@ -10,6 +12,8 @@ export class LinkedinService {
     private readonly chat: LinkedinChatService,
     private readonly connection: LinkedinConnectionService,
     private readonly salesNav: LinkedinSalesNavigatorService,
+    private readonly salesNavChat: LinkedinSalesNavigatorChatService,
+    private readonly salesNavConn: LinkedinSalesNavigatorConnectionService,
   ) {}
 
   // -------------------------------
@@ -195,5 +199,74 @@ export class LinkedinService {
       message,
       subject,
     );
+  }
+
+  readSalesNavChat(
+    profileUrl: string,
+    limit?: number,
+    threadHint?: string,
+  ): Promise<any>;
+  readSalesNavChat(
+    sessionId: string,
+    profileUrl: string,
+    limit?: number,
+    threadHint?: string,
+  ): Promise<any>;
+
+  async readSalesNavChat(
+    a: string,
+    b?: string | number,
+    c?: number | string,
+    d?: string,
+  ): Promise<any> {
+    const looksLikeUrl = (s: string) =>
+      /^https?:\/\//i.test(s) || /linkedin\.com/i.test(s);
+
+    // Legacy: (profileUrl, limit?, threadHint?)
+    if (looksLikeUrl(a)) {
+      const sessionId = 'default';
+      const profileUrl = a;
+      const limit = typeof b === 'number' ? b : undefined;
+      const threadHint = typeof c === 'string' ? c : undefined;
+      return this.salesNavChat.readSalesNavChat(
+        sessionId,
+        profileUrl,
+        limit ?? 30,
+        threadHint,
+      );
+    }
+
+    // Nuevo: (sessionId, profileUrl, limit?, threadHint?)
+    const sessionId = a;
+    const profileUrl = String(b ?? '');
+    const limit = typeof c === 'number' ? c : undefined;
+    const threadHint = typeof c === 'string' ? c : d;
+
+    return this.salesNavChat.readSalesNavChat(
+      sessionId,
+      profileUrl,
+      limit ?? 30,
+      threadHint,
+    );
+  }
+
+   // -------------------------------
+  // checkSalesNavConnection - overload multi-sesión
+  // -------------------------------
+  checkSalesNavConnection(profileUrl: string): Promise<any>;
+  checkSalesNavConnection(sessionId: string, profileUrl: string): Promise<any>;
+
+  async checkSalesNavConnection(a: string, b?: string): Promise<any> {
+    // Nueva firma: (sessionId, profileUrl)
+    if (typeof b === 'string') {
+      const sessionId = a;
+      const profileUrl = b;
+      return this.salesNavConn.checkConnectionSalesNavigator(sessionId, profileUrl);
+    }
+
+    // Legacy: (profileUrl) -> sesión "default"
+    const sessionId = 'default';
+    const profileUrl = a;
+    return this.salesNavConn.checkConnectionSalesNavigator(sessionId, profileUrl);
   }
 }
