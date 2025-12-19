@@ -63,9 +63,8 @@ export class StreamGateway implements OnGatewayConnection, OnGatewayDisconnect {
         else ack?.({ ok: true, data });
 
         // ✅ frame inmediato post-input (pero evitamos hacerlo en listTabs)
-        const shouldPushFrame = !(
-          ev.type === 'cmd' && ev.command === 'listTabs'
-        );
+        const shouldPushFrame =
+          ev.type === 'cmd' ? ev.command !== 'listTabs' : ev.type !== 'move'; // ✅ no empujar frame por move
 
         if (shouldPushFrame) {
           void this.streamService

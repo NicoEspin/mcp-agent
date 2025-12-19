@@ -51,9 +51,10 @@ export class StreamService {
       let invalidate = true;
 
       switch (ev.type) {
-        case 'move':
-          await this.playwright.mouseMove(sessionId, ev.x, ev.y);
-          break;
+      case 'move':
+        invalidate = false; 
+        await this.playwright.mouseMove(sessionId, ev.x, ev.y);
+        break;
 
         case 'down':
           await this.playwright.mouseDown(sessionId, ev.x, ev.y, {
