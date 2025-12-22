@@ -1,5 +1,12 @@
-// src/linkedin/dto/send-message.dto.ts
-import { IsOptional, IsString, IsUrl, MinLength } from 'class-validator';
+import {
+  ArrayMinSize,
+  IsArray,
+  IsOptional,
+  IsString,
+  IsUrl,
+  MinLength,
+  ValidateIf,
+} from 'class-validator';
 
 export class SendMessageDto {
   @IsOptional()
@@ -10,7 +17,17 @@ export class SendMessageDto {
   @IsUrl()
   profileUrl!: string;
 
+  // ✅ Legacy: se valida SOLO si no hay messages
+  @ValidateIf((o) => !o.messages || o.messages.length === 0)
   @IsString()
   @MinLength(1)
-  message!: string;
+  message?: string;
+
+  // ✅ Nuevo: si viene, se valida siempre
+  @IsOptional()
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  @MinLength(1, { each: true })
+  messages?: string[];
 }

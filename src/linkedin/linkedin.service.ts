@@ -61,37 +61,51 @@ export class LinkedinService {
     return this.chat.readChat(sessionId, profileUrl, limit, threadHint);
   }
 
-  // -------------------------------
-  // sendMessage - overload multi-sesión
-  // -------------------------------
-  // Legacy:
-  //   sendMessage(profileUrl, message)
-  sendMessage(profileUrl: string, message: string): Promise<any>;
+// -------------------------------
+// sendMessage - overload multi-sesión + multi-messages
+// -------------------------------
 
-  // Nuevo:
-  //   sendMessage(sessionId, profileUrl, message)
-  sendMessage(
-    sessionId: string,
-    profileUrl: string,
-    message: string,
-  ): Promise<any>;
+// Legacy:
+//   sendMessage(profileUrl, message | messages)
+sendMessage(profileUrl: string, message: string | string[]): Promise<any>;
 
-  async sendMessage(a: string, b: string, c?: string): Promise<any> {
-    // Nueva firma: (sessionId, profileUrl, message)
-    if (typeof c === 'string') {
-      const sessionId = a;
-      const profileUrl = b;
-      const message = c;
-      return this.chat.sendMessage(sessionId, profileUrl, message);
-    }
+// Nuevo:
+//   sendMessage(sessionId, profileUrl, message | messages)
+sendMessage(
+  sessionId: string,
+  profileUrl: string,
+  message: string | string[],
+): Promise<any>;
 
-    // Legacy: (profileUrl, message) -> sesión "default"
-    const sessionId = 'default';
-    const profileUrl = a;
-    const message = b;
-    return this.chat.sendMessage(sessionId, profileUrl, message);
+async sendMessage(
+  a: string,
+  b: string | string[],
+  c?: string | string[],
+): Promise<any> {
+  // Nueva firma: (sessionId, profileUrl, messageOrMessages)
+  if (typeof c !== 'undefined') {
+    const sessionId = a;
+    const profileUrl = b as string;
+    const messageOrMessages = c;
+
+    const messages = Array.isArray(messageOrMessages)
+      ? messageOrMessages
+      : [messageOrMessages];
+
+    return this.chat.sendMessages(sessionId, profileUrl, messages);
   }
 
+  // Legacy: (profileUrl, messageOrMessages) -> sesión "default"
+  const sessionId = 'default';
+  const profileUrl = a;
+  const messageOrMessages = b;
+
+  const messages = Array.isArray(messageOrMessages)
+    ? messageOrMessages
+    : [messageOrMessages];
+
+  return this.chat.sendMessages(sessionId, profileUrl, messages);
+}
   // -------------------------------
   // sendConnection - overload multi-sesión
   // -------------------------------

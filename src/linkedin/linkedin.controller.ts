@@ -90,47 +90,51 @@ export class LinkedinController {
   // -------------------
   // send-message (POST)
   // -------------------
-  @Post('send-message')
-  async sendMessage(@Body() dto: SendMessageDto) {
-    const sessionId = dto.sessionId ?? 'default';
+@Post('send-message')
+async sendMessage(@Body() dto: SendMessageDto) {
+  const sessionId = dto.sessionId ?? 'default';
 
-    return this.withSessionLock(sessionId, async () => {
-      const actionResult = await this.linkedin.sendMessage(
-        sessionId,
-        dto.profileUrl,
-        dto.message,
-      );
+  return this.withSessionLock(sessionId, async () => {
+    const messages =
+      Array.isArray(dto.messages) && dto.messages.length
+        ? dto.messages
+        : [dto.message ?? ''];
 
-      // ✅ verification FIRST
-      const verification = await this.verifier.verifyAfterAction({
-        sessionId,
-        action: 'send_message',
-        profileUrl: dto.profileUrl,
-        message: dto.message,
-        actionResult,
-      });
+    const actionResult = await this.linkedin.sendMessage(
+      sessionId,
+      dto.profileUrl,
+      messages, // ✅ ahora puede ser array
+    );
 
-      // ✅ close AFTER verification (implemented in chat-service)
-      let closeChat: any = null;
-
-      if (verification?.is_human_required) {
-        closeChat = {
-          ok: true,
-          skipped: true,
-          reason: verification.human_reason ?? 'human_required',
-        };
-      } else {
-        try {
-          closeChat = await this.chat.closeChatOverlay(sessionId);
-        } catch (e: any) {
-          closeChat = { ok: false, error: e?.message ?? String(e) };
-        }
-      }
-
-      return { ...actionResult, verification, closeChat };
+    // ✅ verification FIRST
+    const verification = await this.verifier.verifyAfterAction({
+      sessionId,
+      action: 'send_message',
+      profileUrl: dto.profileUrl,
+      message: messages.join('\n\n'), // para mantener compat con el verifier
+      actionResult,
     });
-  }
 
+    // ✅ close AFTER verification
+    let closeChat: any = null;
+
+    if (verification?.is_human_required) {
+      closeChat = {
+        ok: true,
+        skipped: true,
+        reason: verification.human_reason ?? 'human_required',
+      };
+    } else {
+      try {
+        closeChat = await this.chat.closeChatOverlay(sessionId);
+      } catch (e: any) {
+        closeChat = { ok: false, error: e?.message ?? String(e) };
+      }
+    }
+
+    return { ...actionResult, verification, closeChat };
+  });
+}
   // -------------------
   // send-connection (POST)
   // -------------------
