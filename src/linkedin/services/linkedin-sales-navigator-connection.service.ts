@@ -4,6 +4,7 @@ import { PlaywrightService } from '../../browser/playwright.service';
 import { ConfigService } from '@nestjs/config';
 import { StreamService } from '../../stream/stream.service';
 import OpenAI from 'openai';
+import { buildEnsureOnUrlSnippet } from '../utils/navigation-snippets';
 
 type SessionId = string;
 
@@ -64,9 +65,14 @@ export class LinkedinSalesNavigatorConnectionService {
    * - espera popover/menu
    * - extrae menuItems (fallback sin visión)
    */
-  private buildOpenSalesNavAndOpenEllipsisMenuCode(profileUrl: string) {
-    return `
+// ✅ UPDATED: buildOpenSalesNavAndOpenEllipsisMenuCode (reemplaza page.goto por ensureOnUrl)
+// src/linkedin/services/linkedin-sales-navigator-connection.service.ts
+
+private buildOpenSalesNavAndOpenEllipsisMenuCode(profileUrl: string) {
+  return `
 async (page) => {
+  ${buildEnsureOnUrlSnippet()}
+
   const profileUrl = ${JSON.stringify(profileUrl)};
   const debug = (msg) => console.log('[salesnav-check-connection]', msg, 'url=', page.url());
   const sleep = (ms) => page.waitForTimeout(ms);
@@ -139,24 +145,36 @@ async (page) => {
   };
 
   // -----------------------------
-  // 1) Ir al perfil (LinkedIn)
+  // 0) FAST PATH: si ya estamos en Sales Navigator, NO navegamos al perfil
   // -----------------------------
-  debug('goto profile');
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
-  await stepWait(1800);
-  debug('profile loaded');
-
-  const { main, scope } = await getMainScope();
-
-  // Si ya estamos en Sales Navigator por alguna razón, saltamos el overflow.
-  const alreadySalesNav =
+  const alreadySalesNavAtStart =
     looksLikeSalesNav(page.url()) ||
-    (await page.locator('button[data-anchor-send-inmail], textarea[name="message"]').first().isVisible().catch(() => false));
+    (await page
+      .locator('button[data-anchor-send-inmail], textarea[name="message"]')
+      .first()
+      .isVisible()
+      .catch(() => false));
 
   let salesPage = page;
   let openedIn = 'same';
 
-  if (!alreadySalesNav) {
+  // -----------------------------
+  // 1) Ir al perfil (LinkedIn) usando ensureOnUrl (en lugar de goto)
+  // -----------------------------
+  if (!alreadySalesNavAtStart) {
+    debug('ensureOnUrl profile');
+    const nav = await ensureOnUrl(profileUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 35000,
+      settleMs: 1800,      // equivalente a tu stepWait post-goto
+      allowSubpaths: false,
+    });
+    debug('ensureOnUrl -> ' + JSON.stringify(nav));
+    await stepWait(900);
+    debug('profile ready');
+
+    const { main, scope } = await getMainScope();
+
     // -----------------------------
     // 2) Click "More / Más" (overflow)
     // -----------------------------
@@ -269,7 +287,9 @@ async (page) => {
       await stepWait(1600);
     }
   } else {
-    debug('already on Sales Navigator context, skipping overflow');
+    debug('already on Sales Navigator at start -> skip ensureOnUrl + overflow');
+    salesPage = page;
+    openedIn = 'same';
   }
 
   // -----------------------------
@@ -404,7 +424,7 @@ async (page) => {
   };
 }
 `;
-  }
+}
 
   async checkConnectionSalesNavigator(
     sessionId: SessionId,

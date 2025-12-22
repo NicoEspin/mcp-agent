@@ -1,6 +1,7 @@
 // src/linkedin/services/linkedin-sales-navigator.service.ts
 import { Injectable, Logger } from '@nestjs/common';
 import { PlaywrightService } from '../../browser/playwright.service';
+import { buildEnsureOnUrlSnippet } from '../utils/navigation-snippets';
 
 type SessionId = string;
 
@@ -10,6 +11,9 @@ export class LinkedinSalesNavigatorService {
 
   constructor(private readonly playwright: PlaywrightService) {}
 
+  // ✅ UPDATED: buildSendSalesNavMessageCode (reemplaza goto por ensureOnUrl)
+  // - NO borra comentarios
+  // - Mantiene todo el flujo igual, solo cambia el paso (1)
   private buildSendSalesNavMessageCode(
     profileUrl: string,
     message: string,
@@ -17,6 +21,8 @@ export class LinkedinSalesNavigatorService {
   ) {
     return `
 async (page) => {
+  ${buildEnsureOnUrlSnippet()}
+
   const profileUrl = ${JSON.stringify(profileUrl)};
   const text = ${JSON.stringify(message)};
   const providedSubjectRaw = ${JSON.stringify(subject ?? '')};
@@ -151,9 +157,15 @@ async (page) => {
   // -----------------------------
   // 1) Ir al perfil (LinkedIn)
   // -----------------------------
-  await debug('goto profile');
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
-  await stepWait(1800);
+  await debug('ensureOnUrl profile');
+  const nav = await ensureOnUrl(profileUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 35000,
+    settleMs: 1800,
+    allowSubpaths: false,
+  });
+  await debug('ensureOnUrl -> ' + JSON.stringify(nav));
+  await stepWait(900);
   await debug('profile loaded');
 
   const { main, scope } = await getMainScope();

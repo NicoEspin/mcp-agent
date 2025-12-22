@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PlaywrightService } from '../../browser/playwright.service';
 import { ConfigService } from '@nestjs/config';
 import { StreamService } from '../../stream/stream.service';
+import { buildEnsureOnUrlSnippet } from '../utils/navigation-snippets';
 import OpenAI from 'openai';
 
 type SessionId = string;
@@ -179,22 +180,28 @@ export class LinkedinConnectionService {
     };
 
     // --- abre overflow ("Más") y devuelve textos del menú ---
+    // ✅ UPDATED: buildOpenOverflowCode (reemplaza page.goto por ensureOnUrl)
+    // (esto es el builder local dentro de checkConnection, como lo tenés hoy)
     const buildOpenOverflowCode = (url: string) => `
 async (page) => {
+  ${buildEnsureOnUrlSnippet()}
+
   const profileUrl = ${JSON.stringify(url)};
   const debug = (msg) => console.log('[check-connection]', msg, 'url=', page.url());
 
   page.setDefaultTimeout(12000);
   page.setDefaultNavigationTimeout(30000);
 
-  await debug('Ir al perfil');
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
-  
-  // Increased initial waiting time for page to fully load
-  await page.waitForTimeout(2500);
-  await debug('Perfil cargado - esperando estabilización');
-  
-  // Wait for LinkedIn's dynamic content to load
+  await debug('Ir al perfil (ensureOnUrl)');
+  const nav = await ensureOnUrl(profileUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 30000,
+    settleMs: 2500,
+    allowSubpaths: false,
+  });
+  await debug('ensureOnUrl -> ' + JSON.stringify(nav));
+
+  // Wait for LinkedIn's dynamic content to load (mantenemos tu wait extra)
   await page.waitForTimeout(3000);
 
   const main = page.locator('main').first();
@@ -211,7 +218,7 @@ async (page) => {
     scope.locator('button[aria-label="Más acciones"]').first(),
     scope.locator('button[id*="ember"][id*="profile-overflow-action"]').first(),
     scope.locator('button.artdeco-dropdown__trigger:has(span:text("Más"))').first(),
-    
+
     // Original working selectors
     scope.locator('button[id$="-profile-overflow-action"].artdeco-dropdown__trigger').first(),
     scope.locator('button[aria-label*="Más acciones" i], button[aria-label*="More actions" i]').first(),
@@ -231,7 +238,7 @@ async (page) => {
     // More comprehensive text-based selectors
     scope.locator('button:has-text("Más")').first(),
     scope.locator('button >> text="Más"').first(),
-    
+
     // Fallback global selectors
     main.locator('button[aria-label="Más acciones"]').first(),
     main.locator('button[id*="ember"][id*="profile-overflow-action"]').first(),
@@ -254,7 +261,7 @@ async (page) => {
   while (!moreBtn && retryCount < maxRetries) {
     if (retryCount > 0) {
       await debug(\`Intento \${retryCount + 1}/\${maxRetries} - esperando más tiempo\`);
-      await page.waitForTimeout(2000 + (retryCount * 1500)); // Progressive delay: 2s, 3.5s, 5s
+      await page.waitForTimeout(2000 + (retryCount * 1500)); // 2s, 3.5s, 5s
     }
 
     for (let i = 0; i < candidates.length; i++) {
@@ -278,7 +285,7 @@ async (page) => {
     // Final fallback: wait longer and try one more time
     await debug('Último intento - esperando 5 segundos más');
     await page.waitForTimeout(5000);
-    
+
     for (let i = 0; i < candidates.length; i++) {
       const btn = candidates[i];
       const ok = await btn.isVisible().catch(() => false);
@@ -322,7 +329,7 @@ async (page) => {
     try {
       if (dropdownRetries > 0) {
         await debug(\`Dropdown intento \${dropdownRetries + 1}/\${maxDropdownRetries}\`);
-        await page.waitForTimeout(1000 + (dropdownRetries * 1000)); // Progressive delay
+        await page.waitForTimeout(1000 + (dropdownRetries * 1000));
       }
 
       // Try multiple dropdown selectors
@@ -354,11 +361,10 @@ async (page) => {
     // Final fallback attempt
     await debug('Último intento para dropdown - esperando 3 segundos más');
     await page.waitForTimeout(3000);
-    
-    // Try any visible dropdown-like element
+
     const anyDropdown = page.locator('.artdeco-dropdown, .dropdown, [role="menu"], [role="listbox"]').last();
     const anyDropdownVisible = await anyDropdown.isVisible().catch(() => false);
-    
+
     if (anyDropdownVisible) {
       root = anyDropdown;
       await debug('Fallback dropdown encontrado');
@@ -380,8 +386,7 @@ async (page) => {
   ];
 
   let texts = [];
-  
-  // Try multiple extraction strategies
+
   for (const selector of itemSelectors) {
     try {
       const itemsLoc = root.locator(selector);
@@ -392,7 +397,7 @@ async (page) => {
           .map((t) => (t || '').replace(/\\s+/g, ' ').trim())
           .filter(Boolean)
           .slice(0, 60);
-        
+
         if (texts.length > 0) {
           await debug(\`Extraídos \${texts.length} items con selector: \${selector}\`);
           break;
@@ -699,6 +704,8 @@ Notas:
       // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
       const code = `
 async (page) => {
+  ${buildEnsureOnUrlSnippet()}
+
   const profileUrl = ${JSON.stringify(profileUrl)};
   const note = ${JSON.stringify(note ?? '')};
 
@@ -710,11 +717,9 @@ async (page) => {
   const handleNoteModal = async (page, note, debug) => {
     try {
       await debug('Verificando si apareció modal de nota');
-      
-      // Realistic human delay before checking modal (7-10 seconds)
-      await page.waitForTimeout(7000 + Math.random() * 3000); // 7-10 seconds
-      
-      // Multiple selectors for the note modal
+
+      await page.waitForTimeout(7000 + Math.random() * 3000);
+
       const modalSelectors = [
         '[data-test-modal-id="send-invite-modal"]',
         '.send-invite',
@@ -723,7 +728,7 @@ async (page) => {
         '[aria-labelledby*="invite" i]',
         '.artdeco-modal-overlay'
       ];
-      
+
       let modal = null;
       for (const selector of modalSelectors) {
         const modalEl = page.locator(selector).first();
@@ -734,19 +739,17 @@ async (page) => {
           break;
         }
       }
-      
+
       if (!modal) {
         await debug('No se encontró modal de nota, conexión enviada sin nota');
         return false;
       }
-      
-      // If note is provided, add it
+
       if (note && note.trim()) {
         await debug('Procesando nota personalizada');
-        
-        // STEP 1: Look for "Añadir una nota" button first
+
         await debug('Buscando botón "Añadir una nota"');
-        
+
         const addNoteButtonSelectors = [
           'button[aria-label*="Añadir una nota" i]',
           'button[aria-label*="Add a note" i]',
@@ -756,7 +759,7 @@ async (page) => {
           'button.artdeco-button--secondary:has(span:text("Añadir una nota"))',
           '[id*="ember"] button:has-text("Añadir una nota")'
         ];
-        
+
         let addNoteButton = null;
         for (const selector of addNoteButtonSelectors) {
           const btnEl = modal.locator(selector).first();
@@ -767,27 +770,20 @@ async (page) => {
             break;
           }
         }
-        
-        // Click "Añadir una nota" button if found
+
         if (addNoteButton) {
           await debug('Haciendo click en "Añadir una nota"');
-          
-          // Realistic human thinking time before clicking (7-12 seconds)
-          await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
-          
-          // Human-like delay and hover before click
+          await page.waitForTimeout(7000 + Math.random() * 5000);
+
           await addNoteButton.hover();
-          await page.waitForTimeout(2000 + Math.random() * 2000); // 2-4 seconds hover
-          
+          await page.waitForTimeout(2000 + Math.random() * 2000);
+
           await addNoteButton.click({ timeout: 5000 });
-          
-          // Wait for textarea to appear (8-12 seconds)
-          await page.waitForTimeout(8000 + Math.random() * 4000); // 8-12 seconds
+          await page.waitForTimeout(8000 + Math.random() * 4000);
         }
-        
-        // STEP 2: Find the textarea (now should be visible)
+
         await debug('Buscando campo de texto para la nota');
-        
+
         const textareaSelectors = [
           'textarea[name="message"]',
           'textarea#custom-message',
@@ -802,7 +798,7 @@ async (page) => {
           'textarea[minlength="1"]',
           'textarea'
         ];
-        
+
         let textarea = null;
         for (const selector of textareaSelectors) {
           const textEl = modal.locator(selector).first();
@@ -813,65 +809,54 @@ async (page) => {
             break;
           }
         }
-        
+
         if (textarea) {
           await debug('Escribiendo nota personalizada');
-          
-          // Realistic human thinking time before typing (7-15 seconds)
-          await page.waitForTimeout(7000 + Math.random() * 8000); // 7-15 seconds
-          
-          // Human-like interaction with textarea
+
+          await page.waitForTimeout(7000 + Math.random() * 8000);
+
           await textarea.hover();
-          await page.waitForTimeout(2000 + Math.random() * 3000); // 2-5 seconds hover
-          
+          await page.waitForTimeout(2000 + Math.random() * 3000);
+
           await textarea.click();
-          await page.waitForTimeout(1000 + Math.random() * 2000); // 1-3 seconds after click
-          
-          // Clear existing text and add our note with human typing speed
+          await page.waitForTimeout(1000 + Math.random() * 2000);
+
           await textarea.fill('');
-          await page.waitForTimeout(2000 + Math.random() * 2000); // 2-4 seconds after clear
-          
-          // Type with realistic human speed and pauses
+          await page.waitForTimeout(2000 + Math.random() * 2000);
+
           const chars = note.split('');
           for (let i = 0; i < chars.length; i++) {
             await textarea.type(chars[i]);
-            
-            // Realistic variable typing speed
-            let delay = 150 + Math.random() * 250; // 150-400ms per character
-            
-            // Frequent longer pauses (thinking/hesitation)
-            if (Math.random() < 0.2) { // 20% chance
-              delay += 1000 + Math.random() * 2000; // Extra 1-3 second pause
+
+            let delay = 150 + Math.random() * 250;
+
+            if (Math.random() < 0.2) {
+              delay += 1000 + Math.random() * 2000;
             }
-            
-            // Longer pause after punctuation
+
             if (['.', ',', '!', '?'].includes(chars[i])) {
-              delay += 500 + Math.random() * 1000; // Extra 500ms-1.5s after punctuation
+              delay += 500 + Math.random() * 1000;
             }
-            
-            // Pause after spaces (word breaks)
+
             if (chars[i] === ' ') {
-              delay += 200 + Math.random() * 400; // Extra 200-600ms after spaces
+              delay += 200 + Math.random() * 400;
             }
-            
+
             await page.waitForTimeout(delay);
           }
-          
-          // Realistic pause after typing to review message (7-12 seconds)
-          await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
-          
+
+          await page.waitForTimeout(7000 + Math.random() * 5000);
+
           await debug('Nota añadida: ' + note.slice(0, 50) + '...');
         } else {
           await debug('No se encontró textarea para la nota');
         }
       }
-      
-      // STEP 3: Click send button with human-like behavior
+
       await debug('Buscando botón de envío');
-      
-      // Realistic human delay before looking for send button (7-12 seconds thinking)
-      await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
-      
+
+      await page.waitForTimeout(7000 + Math.random() * 5000);
+
       const sendButtonSelectors = [
         'button:has(span.artdeco-button__text:text("Enviar"))',
         'button:has-text("Enviar")',
@@ -885,7 +870,7 @@ async (page) => {
         'button:has-text("Enviar invitación")',
         '.artdeco-button--primary:has-text("Enviar")'
       ];
-      
+
       let sendButton = null;
       for (const selector of sendButtonSelectors) {
         const btnEl = modal.locator(selector).first();
@@ -897,25 +882,21 @@ async (page) => {
           break;
         }
       }
-      
+
       if (sendButton) {
         await debug('Preparando envío de conexión');
-        
-        // Final thinking time before sending (8-15 seconds - most important pause!)
-        await page.waitForTimeout(8000 + Math.random() * 7000); // 8-15 seconds
-        
-        // Human-like interaction with send button
+
+        await page.waitForTimeout(8000 + Math.random() * 7000);
+
         await sendButton.hover();
-        await page.waitForTimeout(2000 + Math.random() * 3000); // 2-5 seconds hover
-        
-        // Last moment hesitation before final click (3-7 seconds)
-        await page.waitForTimeout(3000 + Math.random() * 4000); // 3-7 seconds
-        
+        await page.waitForTimeout(2000 + Math.random() * 3000);
+
+        await page.waitForTimeout(3000 + Math.random() * 4000);
+
         await sendButton.click({ timeout: 5000 });
-        
-        // Wait for the action to complete (7-12 seconds)
-        await page.waitForTimeout(7000 + Math.random() * 5000); // 7-12 seconds
-        
+
+        await page.waitForTimeout(7000 + Math.random() * 5000);
+
         await debug('Conexión enviada con modal completado');
         return true;
       } else {
@@ -929,7 +910,7 @@ async (page) => {
         }
         return false;
       }
-      
+
     } catch (error) {
       await debug('Error manejando modal de nota: ' + (error?.message || error));
       return false;
@@ -940,11 +921,16 @@ async (page) => {
   page.setDefaultTimeout(8000);
   page.setDefaultNavigationTimeout(20000);
 
-  // 1) Ir al perfil
-  await debug('Ir al perfil');
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 20000 });
-  await page.waitForTimeout(10000);
-  await debug('Perfil cargado');
+  // ✅ 1) Ir al perfil (ensureOnUrl)
+  await debug('Ir al perfil (ensureOnUrl)');
+  const nav = await ensureOnUrl(profileUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 20000,
+    settleMs: 10000, // equivalente a tu waitForTimeout(10000)
+    allowSubpaths: false,
+  });
+  await debug('ensureOnUrl -> ' + JSON.stringify(nav));
+  await debug('Perfil listo');
 
   // 2) Localizar <main> (si hay más de uno, usamos el último)
   const mains = page.locator('main');
@@ -957,8 +943,7 @@ async (page) => {
 
   // 3) FIRST: Try to find direct "Conectar" button with multiple selectors
   await debug('Buscando botón "Conectar" directo');
-  
-  // Multiple selectors for direct "Conectar" button
+
   const directConnectSelectors = [
     // By aria-label containing "conectar"
     'button[aria-label*="conectar" i]',
@@ -983,10 +968,10 @@ async (page) => {
     'button >> text="Conectar"',
     'button:text("Conectar")'
   ];
-  
+
   let directConnectBtn = null;
   let usedSelector = '';
-  
+
   for (const selector of directConnectSelectors) {
     try {
       const btn = main.locator(selector).first();
@@ -997,38 +982,34 @@ async (page) => {
         await debug('Encontrado botón Conectar directo con selector: ' + selector);
         break;
       }
-    } catch (e) {
-      // Continue to next selector
-    }
+    } catch {}
   }
-  
-  // If direct button found, click it and return
+
   if (directConnectBtn) {
     try {
       await debug('Click en botón "Conectar" directo');
       await directConnectBtn.click({ timeout: 6000, force: true });
-      await page.waitForTimeout(2000); // Wait for modal to appear
-      
-      // Handle note modal if it appears
+      await page.waitForTimeout(2000);
+
       const noteHandled = await handleNoteModal(page, note, debug);
-      
+
       await debug('Flujo de conexión directa finalizado');
-      return { 
-        ok: true, 
-        viaDirect: true, 
-        selector: usedSelector, 
+      return {
+        ok: true,
+        viaDirect: true,
+        selector: usedSelector,
         noteLength: note.length,
-        noteAdded: noteHandled 
+        noteAdded: noteHandled
       };
     } catch (clickError) {
       await debug('Error al hacer click en botón directo: ' + (clickError?.message || clickError));
       // Fall through to dropdown approach
     }
   }
-  
+
   // 4) FALLBACK: Use "Más acciones" dropdown approach
   await debug('No se encontró botón directo o falló click, usando dropdown "Más acciones"');
-  
+
   let moreBtn = main
     .locator(
       [
@@ -1048,10 +1029,7 @@ async (page) => {
   await moreBtn.click({ timeout: 6000, force: true });
   await page.waitForTimeout(500);
 
-  // 5) Esperar a que se renderice el contenido interno del dropdown
-  const dropdownInner = page
-    .locator('div.artdeco-dropdown__content-inner')
-    .last();
+  const dropdownInner = page.locator('div.artdeco-dropdown__content-inner').last();
 
   await dropdownInner.waitFor({ state: 'visible', timeout: 7000 }).catch(() => {
     throw new Error('No se abrió el popover de "Más acciones" (artdeco-dropdown__content-inner).');
@@ -1081,19 +1059,17 @@ async (page) => {
   await debug('Click en "Conectar" dentro del dropdown');
   await connectButton.click({ timeout: 6000, force: true });
 
-  // 7) Espera y manejo del modal de nota
-  await page.waitForTimeout(2000); // Wait for modal to appear
-  
-  // Handle note modal if it appears
+  await page.waitForTimeout(2000);
+
   const noteHandled = await handleNoteModal(page, note, debug);
 
   await debug('Flujo de conexión por dropdown finalizado');
 
-  return { 
-    ok: true, 
-    viaPopover: true, 
+  return {
+    ok: true,
+    viaPopover: true,
     noteLength: note.length,
-    noteAdded: noteHandled 
+    noteAdded: noteHandled
   };
 }
 `;

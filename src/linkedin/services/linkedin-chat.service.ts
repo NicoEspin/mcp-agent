@@ -2,6 +2,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PlaywrightService } from '../../browser/playwright.service';
 import { extractFirstText } from '../utils/mcp-utils';
+import { buildEnsureOnUrlSnippet } from '../utils/navigation-snippets';
 
 type SessionId = string;
 
@@ -134,9 +135,7 @@ async (page) => {
     return this.playwright.runCode(code, sessionId);
   }
 
-  // ✅ UPDATED: buildReadChatCode + readChat with robust timestamp extraction + scoped DOM + safe parsing
-  // src/linkedin/services/linkedin-chat.service.ts
-
+  // ✅ UPDATED: buildReadChatCode con ensureOnUrl (skip si ya está en la URL)
   private buildReadChatCode(
     profileUrl: string,
     limit: number,
@@ -144,6 +143,7 @@ async (page) => {
   ) {
     return `
 async (page) => {
+  ${buildEnsureOnUrlSnippet()}
   const profileUrl = ${JSON.stringify(profileUrl)};
   const limit = ${JSON.stringify(limit)};
   const threadHint = ${JSON.stringify(threadHint ?? '')};
@@ -152,11 +152,16 @@ async (page) => {
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // -----------------------------
-  // 1) Ir al perfil
+  // 1) Ir al perfil (solo si hace falta)
   // -----------------------------
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 25000 });
-  await page.waitForTimeout(800);
-  await debug('Perfil cargado');
+  const nav = await ensureOnUrl(profileUrl, {
+    waitUntil: 'domcontentloaded',
+    timeout: 25000,
+    settleMs: 800,
+    allowSubpaths: false,
+  });
+  await debug('ensureOnUrl -> ' + JSON.stringify(nav));
+  await debug('Perfil listo');
 
   const main = page.locator('main').first();
   const topCard = main
@@ -571,6 +576,7 @@ async (page) => {
     return this.sendMessages(sessionId, profileUrl, [message]);
   }
 
+  // ✅ UPDATED: sendMessages con ensureOnUrl (skip si ya está en la URL)
   async sendMessages(
     sessionId: SessionId,
     profileUrl: string,
@@ -620,6 +626,8 @@ async (page) => {
 
     const code = `
 async (page) => {
+  ${buildEnsureOnUrlSnippet()}
+
   const profileUrl = ${JSON.stringify(profileUrl)};
   const messages = ${JSON.stringify(cleaned)};
 
@@ -630,12 +638,8 @@ async (page) => {
 
   const sleep = (ms) => page.waitForTimeout(ms);
 
-  const normalizeUrl = (u) => (u || '').split('?')[0].replace(/\\/$/, '');
-  const isOnTargetProfile = () => {
-    const cur = normalizeUrl(page.url());
-    const target = normalizeUrl(profileUrl);
-    return cur === target || cur.startsWith(target + '/');
-  };
+  // ✅ usa el helper compartido
+  const isOnTargetProfile = () => __sameUrl(page.url(), profileUrl, true);
 
   const findVisibleBoxNow = async () => {
     const a = page.locator(
@@ -661,15 +665,20 @@ async (page) => {
   };
 
   // ✅ FAST PATH:
-  // Si ya está visible el textarea Y estamos en el perfil objetivo, no hacemos goto/click CTA.
+  // Si ya está visible el textarea Y estamos en el perfil objetivo, no navegamos ni clickeamos CTA.
   let box = await findVisibleBoxNow();
   if (box && isOnTargetProfile()) {
     await debug('Textarea visible en perfil objetivo -> skip navegación y CTA');
   } else {
-    // 1) Ir al perfil
-    await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
-    await sleep(1200);
-    await debug('Perfil cargado');
+    // 1) Ir al perfil (solo si hace falta)
+    const nav = await ensureOnUrl(profileUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 60000,
+      settleMs: 1200,
+      allowSubpaths: false,
+    });
+    await debug('ensureOnUrl -> ' + JSON.stringify(nav));
+    await debug('Perfil listo');
 
     const main = page.locator('main').first();
     const topCard = main.locator('.pv-top-card, .pv-top-card-v2-ctas, .pv-top-card-v2').first();
@@ -774,7 +783,6 @@ async (page) => {
     // 2) Hard clear via DOM
     try {
       await box.evaluate((el) => {
-        // contenteditable
         try { el.innerHTML = ''; } catch {}
         try { el.textContent = ''; } catch {}
 
@@ -885,7 +893,6 @@ async (page) => {
       preview: text.slice(0, 60),
     });
 
-    // mini delay entre mensajes
     await sleep(250);
   }
 

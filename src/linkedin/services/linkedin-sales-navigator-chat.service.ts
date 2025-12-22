@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PlaywrightService } from '../../browser/playwright.service';
+import { buildEnsureOnUrlSnippet } from '../utils/navigation-snippets';
 
 type SessionId = string;
 
@@ -134,6 +135,7 @@ async (page) => {
   // -----------------------------
   // Read SalesNav chat
   // -----------------------------
+  // ✅ UPDATED: buildReadSalesNavChatCode (reemplaza goto por ensureOnUrl)
   private buildReadSalesNavChatCode(
     profileUrl: string,
     limit: number,
@@ -141,6 +143,8 @@ async (page) => {
   ) {
     return `
 async (page) => {
+  ${buildEnsureOnUrlSnippet()}
+
   const profileUrl = ${JSON.stringify(profileUrl)};
   const limit = ${JSON.stringify(limit)};
   const threadHint = ${JSON.stringify(threadHint ?? '')};
@@ -231,12 +235,33 @@ async (page) => {
   };
 
   // -----------------------------
-  // 1) Ir al perfil (LinkedIn)
+  // 0) FAST PATH: si ya estamos en Sales Navigator, evitamos navegar al perfil
   // -----------------------------
-  await debug('goto profile');
-  await page.goto(profileUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
-  await stepWait(1800);
-  await debug('profile loaded');
+  const alreadySalesNavAtStart =
+    looksLikeSalesNav(page.url()) ||
+    (await page
+      .locator('button[data-anchor-send-inmail], textarea[name="message"], p[data-anonymize="general-blurb"]')
+      .first()
+      .isVisible()
+      .catch(() => false));
+
+  // -----------------------------
+  // 1) Ir al perfil (LinkedIn) usando ensureOnUrl (en lugar de goto)
+  // -----------------------------
+  if (!alreadySalesNavAtStart) {
+    await debug('ensureOnUrl profile');
+    const nav = await ensureOnUrl(profileUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 35000,
+      settleMs: 1800,
+      allowSubpaths: false,
+    });
+    await debug('ensureOnUrl -> ' + JSON.stringify(nav));
+    await stepWait(900);
+    await debug('profile loaded');
+  } else {
+    await debug('already on Sales Navigator at start -> skip ensureOnUrl + overflow');
+  }
 
   const { main, scope } = await getMainScope();
 
