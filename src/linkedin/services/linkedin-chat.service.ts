@@ -347,15 +347,17 @@ async (page) => {
 
     const getSenderName = (group) =>
       norm(group.querySelector('.msg-s-message-group__name')?.textContent) ||
-      norm(group.querySelector('[data-anonymize="person-name"]')?.textContent) ||
-      norm(group.querySelector('[data-test-app-aware-link]')?.textContent) ||
       norm(group.querySelector('.msg-s-message-group__profile-link')?.textContent) ||
+      norm(group.querySelector('[data-anonymize="person-name"]')?.textContent) ||
+      norm(group.querySelector('a[data-test-app-aware-link] .msg-s-message-group__name')?.textContent) ||
+      norm(group.querySelector('a[data-test-app-aware-link]')?.textContent) ||
       null;
 
     const getSenderUrl = (group) => {
       const a =
         group.querySelector('a.msg-s-message-group__profile-link') ||
         group.querySelector('a[data-test-app-aware-link]') ||
+        group.querySelector('a.msg-s-event-listitem__link') ||
         group.querySelector('a[href*="/in/"]');
       return a?.getAttribute?.('href') || null;
     };
@@ -403,8 +405,8 @@ async (page) => {
     const messages = [];
     const allGroups = [];
     
-    // Strategy 1: Original .msg-s-message-group selector
-    const groups1 = Array.from(rootEl.querySelectorAll('.msg-s-message-group'));
+    // Strategy 1: Primary LinkedIn chat selectors (.msg-s-event-listitem is the main container)
+    const groups1 = Array.from(rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group'));
     if (groups1.length > 0) {
       allGroups.push(...groups1);
     }
@@ -448,12 +450,20 @@ async (page) => {
       const senderProfileUrl = getSenderUrl(g);
       const groupTime = getGroupTime(g);
 
-      // ✅ FALLBACK STRATEGY: Multiple item selectors
-      let items = Array.from(
-        g.querySelectorAll(
-          'li.msg-s-message-group__message, li.msg-s-event-listitem, .msg-s-event-listitem'
-        )
-      );
+      // ✅ STRATEGY: Handle different LinkedIn message structures
+      let items = [];
+      
+      // For .msg-s-event-listitem containers, they ARE the message items
+      if (g.classList.contains('msg-s-event-listitem')) {
+        items = [g];
+      } else {
+        // For .msg-s-message-group containers, look for nested items
+        items = Array.from(
+          g.querySelectorAll(
+            'li.msg-s-message-group__message, li.msg-s-event-listitem, .msg-s-event-listitem'
+          )
+        );
+      }
 
       // Fallback 1: Alternative item selectors
       if (items.length === 0) {
@@ -488,7 +498,7 @@ async (page) => {
           it.getAttribute?.('data-event-urn') || 
           it.getAttribute?.('data-message-id') ||
           it.id || 
-          null;
+          \`msg-\${messages.length}\`;
 
         messages.push({
           id: messageId,
@@ -536,13 +546,29 @@ async (page) => {
 
     const ordered = reversed ? deduped.reverse() : deduped;
 
+    // Strategy tracking
+    let strategyUsed = 'unknown';
+    if (allGroups.length === 0) {
+      strategyUsed = 'generic-text-extraction';
+    } else if (groups1.length > 0) {
+      strategyUsed = 'primary-selectors';
+    } else {
+      strategyUsed = 'alternative-selectors';
+    }
+
+    console.log('[extract-debug] Strategy:', strategyUsed, 'Groups found:', allGroups.length, 'Messages:', ordered.length);
+
     return {
       ok: true,
       totalFound: ordered.length,
       reversed,
       messages: ordered,
-      fallbacksUsed: allGroups.length === 0 ? 'generic-text-extraction' : 
-                     cappedGroups.length < groups1.length ? 'alternative-selectors' : 'primary-selectors',
+      fallbacksUsed: strategyUsed,
+      debugInfo: {
+        groupsFound: allGroups.length,
+        primarySelectorGroups: groups1?.length || 0,
+        strategyUsed,
+      },
     };
   });
 
@@ -618,6 +644,23 @@ async (page) => {
     extractionStrategy: msgs[0]?.isPlaceholder ? 'placeholder' : 
                        msgs[0]?.isFallback ? 'emergency-fallback' : 'standard',
   };
+
+  // ✅ Wait for chat content to fully load before extraction
+  await debug('Waiting for message content to load...');
+  
+  // Wait for specific message indicators
+  try {
+    await page.waitForSelector('.msg-s-event-listitem, .msg-s-message-group', { 
+      timeout: 3000,
+      state: 'visible' 
+    });
+    await debug('Message containers detected, proceeding with extraction');
+  } catch {
+    await debug('No structured message containers found after 3s, proceeding with fallback');
+  }
+
+  // Additional wait for dynamic content
+  await sleep(800);
 
   // ✅ return object (not JSON.stringify)
   return result;
