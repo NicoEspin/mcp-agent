@@ -955,6 +955,44 @@ async (page) => {
     }];
   }
 
+  // ✅ Add testing_new_ways object with raw chat content
+  const testing_new_ways = await root.evaluate((rootEl) => {
+    try {
+      // Get all text content from the chat area (like Ctrl+A, Ctrl+C, Ctrl+V)
+      const allText = rootEl.innerText || rootEl.textContent || '';
+      
+      // Also try to get HTML content in case we need it
+      const allHtml = rootEl.innerHTML || '';
+      
+      return {
+        raw_text_content: allText,
+        raw_html_content: allHtml.length > 50000 ? allHtml.substring(0, 50000) + '...[truncated]' : allHtml,
+        extraction_timestamp: new Date().toISOString(),
+        content_length: allText.length,
+        html_length: allHtml.length,
+        extraction_method: 'ctrl_a_ctrl_c_ctrl_v_simulation'
+      };
+    } catch (e) {
+      return {
+        raw_text_content: '',
+        raw_html_content: '',
+        extraction_timestamp: new Date().toISOString(),
+        content_length: 0,
+        html_length: 0,
+        extraction_method: 'ctrl_a_ctrl_c_ctrl_v_simulation',
+        error: e.message
+      };
+    }
+  }).catch(() => ({
+    raw_text_content: '',
+    raw_html_content: '',
+    extraction_timestamp: new Date().toISOString(),
+    content_length: 0,
+    html_length: 0,
+    extraction_method: 'ctrl_a_ctrl_c_ctrl_v_simulation',
+    error: 'Failed to extract raw content'
+  }));
+
   const result = {
     ok: true,
     limit,
@@ -966,6 +1004,7 @@ async (page) => {
     fallbacksUsed: payload?.fallbacksUsed || 'unknown',
     extractionStrategy: msgs[0]?.isPlaceholder ? 'placeholder' : 
                        msgs[0]?.isFallback ? 'emergency-fallback' : 'standard',
+    testing_new_ways: testing_new_ways,
   };
 
   // ✅ Wait for chat content to fully load before extraction
