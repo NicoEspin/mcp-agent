@@ -299,89 +299,210 @@ async (page) => {
   }
 
   // -----------------------------
-  // 5) Scroll to load all messages before extraction
+  // 5) Enhanced scroll to load ALL chat history
   // -----------------------------
-  await debug('Starting message scrolling to load all content...');
+  await debug('Starting comprehensive message scrolling to load entire chat history...');
   
-  const scrollToLoadMessages = async () => {
+  const scrollToLoadAllMessages = async () => {
     const scrollContainers = [
       '.msg-s-message-list',
       '.msg-overlay-conversation-bubble__content-wrapper',
       '.msg-conversation__body',
       '.msg-thread',
       '[data-view-name*="conversation"]',
+      '.msg-overlay-conversation-bubble',
     ];
     
     let scrollContainer = null;
     
-    // Find the scrollable container
+    // Find the scrollable container with enhanced detection
     for (const selector of scrollContainers) {
       const container = root.locator(selector).first();
       if (await container.count() && await container.isVisible().catch(() => false)) {
-        scrollContainer = container;
-        await debug(\`Found scrollable container: \${selector}\`);
-        break;
+        // Check if container is actually scrollable
+        const isScrollable = await container.evaluate((el) => {
+          return el.scrollHeight > el.clientHeight || el.scrollWidth > el.clientWidth;
+        }).catch(() => false);
+        
+        if (isScrollable) {
+          scrollContainer = container;
+          await debug(\`Found scrollable container: \${selector}\`);
+          break;
+        }
       }
     }
     
     if (!scrollContainer) {
-      await debug('No scrollable container found, using root for scrolling');
-      scrollContainer = root;
+      await debug('No specific scrollable container found, using page for scrolling');
+      scrollContainer = page.locator('body');
     }
     
-    // Count initial messages to track progress
+    // Enhanced message counting with multiple selectors
+    const countMessages = async () => {
+      return await root.evaluate((rootEl) => {
+        const selectors = [
+          '.msg-s-event-listitem',
+          '.msg-s-message-group',
+          '.msg-s-message-list__event',
+          '.conversation-message-item',
+          'li[data-event-urn]',
+          '[data-view-name*="message-list-item"]'
+        ];
+        
+        const allMessages = new Set();
+        for (const selector of selectors) {
+          const elements = rootEl.querySelectorAll(selector);
+          elements.forEach(el => {
+            // Use unique identifier to avoid duplicates
+            const id = el.getAttribute('data-event-urn') || 
+                      el.getAttribute('data-message-id') || 
+                      el.id || 
+                      el.textContent?.slice(0, 50);
+            if (id) allMessages.add(id);
+          });
+        }
+        
+        return allMessages.size;
+      });
+    };
+    
+    // Enhanced date header counting to track loading progress
+    const countDateHeaders = async () => {
+      return await root.evaluate((rootEl) => {
+        const headers = rootEl.querySelectorAll('.msg-s-message-list__time-heading, time.msg-s-message-list__time-heading');
+        return headers.length;
+      });
+    };
+    
     let previousMessageCount = 0;
     let currentMessageCount = 0;
+    let previousDateHeaders = 0;
+    let currentDateHeaders = 0;
     let scrollAttempts = 0;
-    const maxScrollAttempts = 15;
-    const scrollDelay = 800;
+    const maxScrollAttempts = 25; // Increased for longer chat histories
+    const scrollDelay = 1000; // Increased delay for better loading
+    let noProgressCount = 0;
+    
+    // Initial counts
+    currentMessageCount = await countMessages();
+    currentDateHeaders = await countDateHeaders();
+    
+    await debug(\`Initial state: \${currentMessageCount} messages, \${currentDateHeaders} date headers\`);
     
     do {
-      // Count current messages
       previousMessageCount = currentMessageCount;
-      currentMessageCount = await root.evaluate((rootEl) => {
-        const groups = rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group');
-        return groups.length;
-      });
+      previousDateHeaders = currentDateHeaders;
       
-      await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages found\`);
-      
-      // Scroll to top to load older messages
+      // Multiple scrolling strategies for maximum message loading
       try {
+        // Strategy 1: Scroll to absolute top
         await scrollContainer.evaluate((el) => {
-          el.scrollTo({ top: 0, behavior: 'smooth' });
+          el.scrollTo({ top: 0, behavior: 'instant' });
         });
-        await sleep(scrollDelay);
+        await sleep(200);
         
-        // Also try scrolling up with keyboard
+        // Strategy 2: Keyboard navigation to top
+        await scrollContainer.focus().catch(() => {});
         await scrollContainer.press('Home').catch(() => {});
         await sleep(200);
         
-        // Additional scroll up attempts
-        for (let i = 0; i < 3; i++) {
+        // Strategy 3: Page Up multiple times
+        for (let i = 0; i < 5; i++) {
           await scrollContainer.press('PageUp').catch(() => {});
-          await sleep(100);
+          await sleep(150);
+        }
+        
+        // Strategy 4: Try Ctrl+Home for document top
+        await page.keyboard.down('Control').catch(() => {});
+        await page.keyboard.press('Home').catch(() => {});
+        await page.keyboard.up('Control').catch(() => {});
+        await sleep(200);
+        
+        // Strategy 5: Mouse wheel scrolling
+        if (scrollAttempts % 3 === 0) {
+          await scrollContainer.hover().catch(() => {});
+          for (let i = 0; i < 10; i++) {
+            await page.mouse.wheel(0, -500).catch(() => {});
+            await sleep(50);
+          }
         }
         
       } catch (e) {
-        await debug(\`Scrolling error: \${e.message}\`);
+        await debug(\`Scrolling strategy error: \${e.message}\`);
+      }
+      
+      // Wait for content to load
+      await sleep(scrollDelay);
+      
+      // Check for loading indicators and wait if present
+      const hasLoading = await page.evaluate(() => {
+        const indicators = [
+          '.loading', '.spinner', '[data-loading="true"]',
+          '.msg-s-message-list-loading', '.conversation-loading'
+        ];
+        return indicators.some(sel => document.querySelector(sel));
+      }).catch(() => false);
+      
+      if (hasLoading) {
+        await debug('Loading indicator detected, waiting longer...');
+        await sleep(2000);
+      }
+      
+      // Update counts
+      currentMessageCount = await countMessages();
+      currentDateHeaders = await countDateHeaders();
+      
+      const messageProgress = currentMessageCount - previousMessageCount;
+      const dateProgress = currentDateHeaders - previousDateHeaders;
+      const hasProgress = messageProgress > 0 || dateProgress > 0;
+      
+      await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages (+\${messageProgress}), \${currentDateHeaders} date headers (+\${dateProgress})\`);
+      
+      if (!hasProgress) {
+        noProgressCount++;
+      } else {
+        noProgressCount = 0;
       }
       
       scrollAttempts++;
-      await sleep(scrollDelay);
       
-    } while (
-      scrollAttempts < maxScrollAttempts && 
-      (currentMessageCount > previousMessageCount || scrollAttempts < 3)
-    );
+      // Continue if we're making progress or haven't reached minimum attempts
+      const shouldContinue = (hasProgress && scrollAttempts < maxScrollAttempts) || 
+                            (scrollAttempts < 5) || // minimum attempts regardless
+                            (noProgressCount < 3); // allow some no-progress attempts
+      
+      if (!shouldContinue) break;
+      
+      // Adaptive delay based on progress
+      const adaptiveDelay = hasProgress ? scrollDelay : scrollDelay * 1.5;
+      await sleep(adaptiveDelay);
+      
+    } while (scrollAttempts < maxScrollAttempts);
     
-    await debug(\`Scrolling completed. Final message count: \${currentMessageCount}, scroll attempts: \${scrollAttempts}\`);
+    await debug(\`Comprehensive scrolling completed. Final: \${currentMessageCount} messages, \${currentDateHeaders} date headers, \${scrollAttempts} attempts\`);
+    
+    // Final scroll to ensure we're at the very top
+    try {
+      await scrollContainer.evaluate((el) => {
+        el.scrollTo({ top: 0, behavior: 'instant' });
+      });
+      await sleep(500);
+    } catch (e) {
+      await debug(\`Final scroll error: \${e.message}\`);
+    }
     
     // Final wait for content to settle
-    await sleep(1000);
+    await sleep(1500);
+    
+    return {
+      finalMessageCount: currentMessageCount,
+      finalDateHeaders: currentDateHeaders,
+      scrollAttempts: scrollAttempts
+    };
   };
   
-  await scrollToLoadMessages();
+  const scrollResult = await scrollToLoadAllMessages();
+  await debug(\`Scroll result: \${JSON.stringify(scrollResult)}\`);
 
   // -----------------------------
   // 6) Multiple extraction strategies - run ALL and return the best one
@@ -403,32 +524,169 @@ async (page) => {
       return null;
     };
 
-    const extractClock = (raw) => {
-      const s = norm(raw);
-      if (!s) return { timeRaw: null, time: null };
+    // ✅ ENHANCED: Comprehensive datetime extraction with LinkedIn date grouping support
+    const extractDateTime = (timeRaw, dateContext = null) => {
+      const s = norm(timeRaw);
+      if (!s) return { timeRaw: null, time: null, datetime: null, dateContext: dateContext };
 
-      // 12h: 1:23 PM
+      // Parse time component with multiple fallbacks
+      let parsedTime = null;
+      let hour24 = null;
+      let minute = null;
+
+      // Strategy 1: 12-hour format (1:23 PM, 11:45 AM)
       const m12 = s.match(/\\b(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\b/i);
       if (m12) {
         let hh = parseInt(m12[1], 10);
-        const mm = m12[2];
+        const mm = parseInt(m12[2], 10);
         const ap = m12[3].toUpperCase();
         if (ap === 'PM' && hh < 12) hh += 12;
         if (ap === 'AM' && hh === 12) hh = 0;
-        const hh2 = String(hh).padStart(2, '0');
-        return { timeRaw: s, time: \`\${hh2}:\${mm}\` };
+        hour24 = hh;
+        minute = mm;
+        parsedTime = \`\${String(hh).padStart(2, '0')}:\${String(mm).padStart(2, '0')}\`;
       }
 
-      // 24h: 13:21
-      const m24 = s.match(/\\b(\\d{1,2}):(\\d{2})\\b/);
-      if (m24) {
-        const hh = String(parseInt(m24[1], 10)).padStart(2, '0');
-        const mm = m24[2];
-        return { timeRaw: s, time: \`\${hh}:\${mm}\` };
+      // Strategy 2: 24-hour format (13:21, 09:30)
+      if (!parsedTime) {
+        const m24 = s.match(/\\b(\\d{1,2}):(\\d{2})\\b/);
+        if (m24) {
+          const hh = parseInt(m24[1], 10);
+          const mm = parseInt(m24[2], 10);
+          if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
+            hour24 = hh;
+            minute = mm;
+            parsedTime = \`\${String(hh).padStart(2, '0')}:\${String(mm).padStart(2, '0')}\`;
+          }
+        }
       }
 
-      return { timeRaw: s, time: null };
+      // Strategy 3: Time with seconds (13:21:45)
+      if (!parsedTime) {
+        const mSec = s.match(/\\b(\\d{1,2}):(\\d{2}):(\\d{2})\\b/);
+        if (mSec) {
+          const hh = parseInt(mSec[1], 10);
+          const mm = parseInt(mSec[2], 10);
+          if (hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59) {
+            hour24 = hh;
+            minute = mm;
+            parsedTime = \`\${String(hh).padStart(2, '0')}:\${String(mm).padStart(2, '0')}\`;
+          }
+        }
+      }
+
+      let fullDateTime = null;
+      
+      // Create full datetime if we have both time and date context
+      if (parsedTime && dateContext && hour24 !== null && minute !== null) {
+        try {
+          // Handle different date context formats
+          let targetDate = new Date();
+          
+          if (typeof dateContext === 'string') {
+            // Parse day names (Monday, Tuesday, etc.)
+            const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+            const dayName = dateContext.toLowerCase().trim();
+            const dayIndex = dayNames.indexOf(dayName);
+            
+            if (dayIndex !== -1) {
+              // Calculate the most recent occurrence of this weekday
+              const today = new Date();
+              const todayDay = today.getDay();
+              let daysBack = (todayDay - dayIndex + 7) % 7;
+              if (daysBack === 0) {
+                // If it's the same day, check if the time has passed
+                const nowHour = today.getHours();
+                const nowMinute = today.getMinutes();
+                if (hour24 > nowHour || (hour24 === nowHour && minute > nowMinute)) {
+                  // Time hasn't passed today, so it's last week
+                  daysBack = 7;
+                }
+              }
+              
+              targetDate = new Date(today);
+              targetDate.setDate(today.getDate() - daysBack);
+              targetDate.setHours(hour24, minute, 0, 0);
+              
+              fullDateTime = targetDate.toISOString();
+            }
+          } else if (dateContext instanceof Date) {
+            // Direct date object
+            targetDate = new Date(dateContext);
+            targetDate.setHours(hour24, minute, 0, 0);
+            fullDateTime = targetDate.toISOString();
+          }
+          
+          // Fallback: use today's date if no valid date context
+          if (!fullDateTime) {
+            targetDate = new Date();
+            targetDate.setHours(hour24, minute, 0, 0);
+            fullDateTime = targetDate.toISOString();
+          }
+          
+        } catch (e) {
+          // Fallback on datetime creation error
+          console.log(\`[datetime-extract] Error creating datetime: \${e.message}\`);
+          fullDateTime = null;
+        }
+      }
+
+      return { 
+        timeRaw: s, 
+        time: parsedTime, 
+        datetime: fullDateTime,
+        dateContext: dateContext,
+        hour24: hour24,
+        minute: minute 
+      };
     };
+
+    // ✅ NEW: Extract date headers and build date context mapping
+    const extractDateHeaders = () => {
+      const dateHeaders = Array.from(rootEl.querySelectorAll('.msg-s-message-list__time-heading, time.msg-s-message-list__time-heading'));
+      const dateMap = new Map();
+      
+      for (let i = 0; i < dateHeaders.length; i++) {
+        const header = dateHeaders[i];
+        const dateText = norm(header.textContent);
+        
+        if (dateText) {
+          // Get all elements that come after this date header until the next date header
+          const nextHeader = dateHeaders[i + 1];
+          const startElement = header.parentElement || header;
+          
+          let currentElement = startElement.nextElementSibling;
+          const elementsInRange = [];
+          
+          while (currentElement && (!nextHeader || !nextHeader.parentElement?.contains(currentElement))) {
+            elementsInRange.push(currentElement);
+            
+            // Also check nested elements
+            const nestedMessages = currentElement.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group');
+            elementsInRange.push(...Array.from(nestedMessages));
+            
+            currentElement = currentElement.nextElementSibling;
+            
+            // Safety check to prevent infinite loops
+            if (elementsInRange.length > 1000) break;
+          }
+          
+          // Map each message element to this date context
+          for (const element of elementsInRange) {
+            if (element.classList && (element.classList.contains('msg-s-event-listitem') || 
+                element.classList.contains('msg-s-message-group') ||
+                element.querySelector('.msg-s-event-listitem, .msg-s-message-group'))) {
+              dateMap.set(element, dateText);
+            }
+          }
+        }
+      }
+      
+      console.log(\`[date-extract] Found \${dateHeaders.length} date headers, mapped \${dateMap.size} message elements\`);
+      return dateMap;
+    };
+
+    const dateContextMap = extractDateHeaders();
 
     // ✅ ENHANCED: Improved sender name extraction with more fallbacks
     const getSenderName = (group) => {
@@ -577,6 +835,7 @@ async (page) => {
       return null;
     };
 
+    // ✅ ENHANCED: Get group time with date context support
     const getGroupTime = (group) => {
       const raw = pickFirst(group, [
         'time.msg-s-message-group__timestamp',
@@ -586,9 +845,57 @@ async (page) => {
         'span.msg-s-message-group__timestamp',
         '.msg-s-message-group__timestamp',
       ]);
-      return extractClock(raw);
+      
+      // Get date context for this group
+      let dateContext = null;
+      
+      // Strategy 1: Check direct mapping
+      if (dateContextMap.has(group)) {
+        dateContext = dateContextMap.get(group);
+      }
+      
+      // Strategy 2: Check parent elements
+      if (!dateContext) {
+        let current = group.parentElement;
+        while (current && current !== rootEl) {
+          if (dateContextMap.has(current)) {
+            dateContext = dateContextMap.get(current);
+            break;
+          }
+          current = current.parentElement;
+        }
+      }
+      
+      // Strategy 3: Look for closest preceding date header
+      if (!dateContext) {
+        const allDateHeaders = Array.from(rootEl.querySelectorAll('.msg-s-message-list__time-heading, time.msg-s-message-list__time-heading'));
+        let closestHeader = null;
+        let minDistance = Infinity;
+        
+        for (const header of allDateHeaders) {
+          const headerRect = header.getBoundingClientRect();
+          const groupRect = group.getBoundingClientRect();
+          
+          // Check if header comes before this group in document order
+          const position = header.compareDocumentPosition(group);
+          if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+            const distance = Math.abs(headerRect.bottom - groupRect.top);
+            if (distance < minDistance) {
+              minDistance = distance;
+              closestHeader = header;
+            }
+          }
+        }
+        
+        if (closestHeader) {
+          dateContext = norm(closestHeader.textContent);
+        }
+      }
+      
+      return extractDateTime(raw, dateContext);
     };
 
+    // ✅ ENHANCED: Get item time with enhanced fallback logic
     const getItemTime = (item, groupFallback) => {
       const raw = pickFirst(item, [
         'time.msg-s-event-listitem__timestamp',
@@ -597,8 +904,35 @@ async (page) => {
         '.timestamp',
         '[data-time]',
       ]);
-      const parsed = extractClock(raw);
-      return parsed.time ? parsed : groupFallback;
+      
+      // Try to extract with item's own date context first
+      let dateContext = null;
+      
+      // Check if item has its own date context
+      if (dateContextMap.has(item)) {
+        dateContext = dateContextMap.get(item);
+      }
+      
+      // If not, inherit from the group fallback
+      if (!dateContext && groupFallback && groupFallback.dateContext) {
+        dateContext = groupFallback.dateContext;
+      }
+      
+      const parsed = extractDateTime(raw, dateContext);
+      
+      // Fallback to group time if item time extraction failed
+      if (!parsed.time && groupFallback) {
+        return {
+          ...groupFallback,
+          timeRaw: parsed.timeRaw || groupFallback.timeRaw,
+          extractionSource: 'group-fallback'
+        };
+      }
+      
+      return {
+        ...parsed,
+        extractionSource: parsed.time ? 'item-direct' : 'failed'
+      };
     };
 
     const getItemText = (item) => {
@@ -762,6 +1096,13 @@ async (page) => {
             senderProfileUrl: finalSenderUrl || null,
             time: t.time || null,
             timeRaw: t.timeRaw || null,
+            datetime: t.datetime || null,
+            dateContext: t.dateContext || null,
+            timeDetails: {
+              hour24: t.hour24 ?? null,
+              minute: t.minute ?? null,
+              extractionSource: t.extractionSource || 'standard'
+            },
             text,
             extractionStrategy: strategyName,
           });
@@ -824,6 +1165,13 @@ async (page) => {
           senderProfileUrl: null,
           time: null,
           timeRaw: null,
+          datetime: null,
+          dateContext: null,
+          timeDetails: {
+            hour24: null,
+            minute: null,
+            extractionSource: 'fallback'
+          },
           text: fallbackTexts[i],
           extractionStrategy: 'generic-text-fallback',
         });
@@ -926,8 +1274,16 @@ async (page) => {
             senderProfileUrl: null,
             time: null,
             timeRaw: null,
+            datetime: null,
+            dateContext: null,
+            timeDetails: {
+              hour24: null,
+              minute: null,
+              extractionSource: 'emergency-fallback'
+            },
             text: text,
             isFallback: true,
+            extractionStrategy: 'emergency-fallback',
           });
         }
       }
@@ -950,8 +1306,16 @@ async (page) => {
       senderProfileUrl: null,
       time: null,
       timeRaw: null,
+      datetime: null,
+      dateContext: null,
+      timeDetails: {
+        hour24: null,
+        minute: null,
+        extractionSource: 'placeholder'
+      },
       text: '[No messages could be extracted from this conversation. This may indicate the chat is empty, requires login, or uses a different interface structure.]',
       isPlaceholder: true,
+      extractionStrategy: 'placeholder',
     }];
   }
 
