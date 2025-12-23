@@ -34,6 +34,7 @@ async function bootstrap() {
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
     optionsSuccessStatus: 204,
+    logger: ['log', 'error', 'warn', 'debug', 'verbose'],
   });
   app.enableShutdownHooks();
   await app.listen(process.env.PORT ?? 3001);

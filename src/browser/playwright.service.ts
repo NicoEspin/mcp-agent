@@ -28,6 +28,7 @@ type SessionId = string;
 
 type TabId = string;
 
+
 type TabInfo = {
   tabId: TabId;
   url: string;
@@ -393,6 +394,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     return path.dirname(this.storageState.getStatePath('__probe__'));
   }
 
+  
   async onModuleInit() {
     try {
       await this.initBrowser();
@@ -466,6 +468,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
       this.browser = null;
     }
   }
+  
 
   private async initBrowser() {
     const browserType =
@@ -909,6 +912,7 @@ export class PlaywrightService implements OnModuleInit, OnModuleDestroy {
     };
   }
 
+  
   // Public API methods - direct replacements for MCP calls
 
   async navigate(

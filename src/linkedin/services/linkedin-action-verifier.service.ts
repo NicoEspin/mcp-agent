@@ -258,7 +258,6 @@ Perfil: ${profileUrl ?? 'N/A'}
 
       const resp = await this.openai.chat.completions.create({
         model,
-        temperature: 0,
         messages: [
           {
             role: 'system',

@@ -151,152 +151,266 @@ async (page) => {
   const debug = (msg) => console.log('[read-chat]', msg, 'url=', page.url());
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // -----------------------------
-  // 1) Ir al perfil (solo si hace falta)
-  // -----------------------------
-  const nav = await ensureOnUrl(profileUrl, {
-    waitUntil: 'domcontentloaded',
-    timeout: 25000,
-    settleMs: 800,
-    allowSubpaths: false,
-  });
-  await debug('ensureOnUrl -> ' + JSON.stringify(nav));
-  await debug('Perfil listo');
+  // ✅ NEW: utilidades locales (re-usan helpers del snippet)
+  const normalizeProfileUrl = (u) => __normalizeUrl(u);
+  const sameProfile = (a, b) => __sameUrl(a, b, false);
 
-  const main = page.locator('main').first();
-  const topCard = main
-    .locator('.pv-top-card, .pv-top-card-v2-ctas, .pv-top-card-v2')
-    .first();
-  const scope = (await topCard.count()) ? topCard : main;
+  // ✅ NEW: detectar si ya hay una conversación abierta (overlay/inline)
+  const getOpenThreadProfileHref = async () => {
+    const candidates = [
+      '.msg-overlay-bubble-header__title a[href*="/in/"]',
+      '.msg-overlay-conversation-bubble__header a[href*="/in/"]',
+      '.msg-overlay-bubble-header a[href*="/in/"]',
+      '.msg-thread__link-to-profile a[href*="/in/"]',
+      'a.msg-thread__link-to-profile[href*="/in/"]',
+      '.msg-conversation-card__header a[href*="/in/"]',
+      '.msg-thread__header a[href*="/in/"]',
+      '.msg-overlay-container a[href*="/in/"]',
+      '.msg-overlay-conversation-bubble a[href*="/in/"]',
+    ];
 
-  // -----------------------------
-  // 2) Encontrar CTA mensaje (con fallbacks)
-  // -----------------------------
-  const findMessageButton = async () => {
-    let loc = scope
-      .locator('button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]')
-      .first();
-    if (await loc.count()) return loc;
-
-    loc = main
-      .locator('button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]')
-      .first();
-    if (await loc.count()) return loc;
-
-    loc = scope.locator('button, a').filter({ hasText: /enviar mensaje|message/i }).first();
-    if (await loc.count()) return loc;
-
-    loc = main.locator('button, a').filter({ hasText: /enviar mensaje|message/i }).first();
-    if (await loc.count()) return loc;
-
-    // Icon fallback (si el texto no está)
-    const icon = scope
-      .locator(
-        'use[href="#send-privately-small"], use[href="#send-privately-medium"], ' +
-        'svg[data-test-icon="send-privately-small"], svg[data-test-icon="send-privately-medium"]'
-      )
-      .first();
-
-    if (await icon.count()) {
-      const btn = icon.locator('xpath=ancestor::button[1]').first();
-      if (await btn.count()) return btn;
+    for (const sel of candidates) {
+      const a = page.locator(sel).first();
+      if (!(await a.count().catch(() => 0))) continue;
+      const href = (await a.getAttribute('href').catch(() => '')) || '';
+      if (!href || !href.includes('/in/')) continue;
+      if (href.startsWith('/')) return 'https://www.linkedin.com' + href;
+      return href;
     }
+    return '';
+  };
 
-    const icon2 = main
-      .locator(
-        'use[href="#send-privately-small"], use[href="#send-privately-medium"], ' +
-        'svg[data-test-icon="send-privately-small"], svg[data-test-icon="send-privately-medium"]'
-      )
-      .first();
+  const threadHintMatchesNow = async () => {
+    const hint = (threadHint || '').toString().trim().toLowerCase();
+    if (!hint) return true;
 
-    if (await icon2.count()) {
-      const btn = icon2.locator('xpath=ancestor::button[1]').first();
-      if (await btn.count()) return btn;
+    const titleLocs = [
+      page.locator('.msg-overlay-bubble-header__title').last(),
+      page.locator('.msg-overlay-conversation-bubble__header').last(),
+      page.locator('.msg-thread__header').first(),
+      page.locator('[data-view-name*="conversation"] header').first(),
+    ];
+
+    for (const loc of titleLocs) {
+      try {
+        if (!(await loc.count().catch(() => 0))) continue;
+        const txt = ((await loc.innerText().catch(() => '')) || '').toLowerCase();
+        if (txt && txt.includes(hint)) return true;
+      } catch {}
     }
+    return false;
+  };
 
+  const detectConversationRootNow = async () => {
+    const candidates = [
+      page.locator('.msg-overlay-conversation-bubble__content-wrapper').last(),
+      page.locator('.msg-s-message-list').last(),
+      page.locator('.msg-overlay-conversation-bubble').last(),
+      page.locator('[role="main"] .msg-conversation-listitem').last(),
+      page.locator('.msg-conversation__body').last(),
+      page.locator('.msg-thread').last(),
+      page.locator('[data-view-name*="conversation"]').last(),
+      page.locator('.conversation-wrapper').last(),
+    ];
+
+    for (const loc of candidates) {
+      try {
+        if (!(await loc.count().catch(() => 0))) continue;
+        if (await loc.isVisible().catch(() => false)) return loc;
+      } catch {}
+    }
     return null;
   };
 
-  let messageBtn = await findMessageButton();
+  let root = await detectConversationRootNow();
+  let usedFastPath = false;
+
+  // ✅ FAST PATH:
+  // Si ya hay conversación abierta y coincide con el perfil objetivo (o con el threadHint), no navegamos ni clickeamos CTA.
+  if (root) {
+    const openHref = await getOpenThreadProfileHref();
+    const same = openHref ? sameProfile(openHref, profileUrl) : false;
+    const hintOk = await threadHintMatchesNow();
+
+    if (same || hintOk) {
+      usedFastPath = true;
+      await debug(
+        'Conversación ya abierta -> skip navegación/CTA (sameProfile=' +
+          same +
+          ', hintOk=' +
+          hintOk +
+          ', openHref=' +
+          (openHref || 'n/a') +
+          ')'
+      );
+    } else {
+      root = null;
+    }
+  }
 
   // -----------------------------
-  // 3) Overflow "Más" si no hay CTA
+  // 1) Ir al perfil (solo si hace falta)
   // -----------------------------
-  if (!messageBtn) {
-    await debug('CTA mensaje no encontrado. Probando overflow del perfil');
+  if (!usedFastPath) {
+    const nav = await ensureOnUrl(profileUrl, {
+      waitUntil: 'domcontentloaded',
+      timeout: 25000,
+      settleMs: 800,
+      allowSubpaths: false,
+    });
+    await debug('ensureOnUrl -> ' + JSON.stringify(nav));
+    await debug('Perfil listo');
 
-    const moreBtn = scope
-      .locator(
-        'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
-        'button[data-view-name="profile-overflow-button"][aria-label="More"]'
-      )
+    const main = page.locator('main').first();
+    const topCard = main
+      .locator('.pv-top-card, .pv-top-card-v2-ctas, .pv-top-card-v2')
       .first();
+    const scope = (await topCard.count()) ? topCard : main;
 
-    if (await moreBtn.count()) {
-      await moreBtn.scrollIntoViewIfNeeded().catch(() => {});
-      await moreBtn.click({ timeout: 8000, force: true });
-      await page.waitForTimeout(200);
+    // -----------------------------
+    // 2) Encontrar CTA mensaje (con fallbacks)
+    // -----------------------------
+    const findMessageButton = async () => {
+      let loc = scope
+        .locator('button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]')
+        .first();
+      if (await loc.count()) return loc;
 
-      const msgItem = page
-        .getByRole('menuitem', { name: /enviar mensaje|mensaje|message/i })
+      loc = main
+        .locator('button[aria-label^="Enviar mensaje"], button[aria-label^="Message"]')
+        .first();
+      if (await loc.count()) return loc;
+
+      loc = scope.locator('button, a').filter({ hasText: /enviar mensaje|message/i }).first();
+      if (await loc.count()) return loc;
+
+      loc = main.locator('button, a').filter({ hasText: /enviar mensaje|message/i }).first();
+      if (await loc.count()) return loc;
+
+      // Icon fallback (si el texto no está)
+      const icon = scope
+        .locator(
+          'use[href="#send-privately-small"], use[href="#send-privately-medium"], ' +
+          'svg[data-test-icon="send-privately-small"], svg[data-test-icon="send-privately-medium"]'
+        )
         .first();
 
-      if (await msgItem.count()) {
-        await msgItem.click({ timeout: 8000 });
+      if (await icon.count()) {
+        const btn = icon.locator('xpath=ancestor::button[1]').first();
+        if (await btn.count()) return btn;
+      }
+
+      const icon2 = main
+        .locator(
+          'use[href="#send-privately-small"], use[href="#send-privately-medium"], ' +
+          'svg[data-test-icon="send-privately-small"], svg[data-test-icon="send-privately-medium"]'
+        )
+        .first();
+
+      if (await icon2.count()) {
+        const btn = icon2.locator('xpath=ancestor::button[1]').first();
+        if (await btn.count()) return btn;
+      }
+
+      return null;
+    };
+
+    let messageBtn = await findMessageButton();
+
+    // -----------------------------
+    // 3) Overflow "Más" si no hay CTA
+    // -----------------------------
+    if (!messageBtn) {
+      await debug('CTA mensaje no encontrado. Probando overflow del perfil');
+
+      const moreBtn = scope
+        .locator(
+          'button[data-view-name="profile-overflow-button"][aria-label="Más"], ' +
+          'button[data-view-name="profile-overflow-button"][aria-label="More"]'
+        )
+        .first();
+
+      if (await moreBtn.count()) {
+        await moreBtn.scrollIntoViewIfNeeded().catch(() => {});
+        await moreBtn.click({ timeout: 8000, force: true });
+        await page.waitForTimeout(200);
+
+        const msgItem = page
+          .getByRole('menuitem', { name: /enviar mensaje|mensaje|message/i })
+          .first();
+
+        if (await msgItem.count()) {
+          await msgItem.click({ timeout: 8000 });
+        } else {
+          throw new Error('No se encontró opción de mensaje en el menú Más del perfil.');
+        }
       } else {
-        throw new Error('No se encontró opción de mensaje en el menú Más del perfil.');
+        throw new Error('No se encontró CTA de mensaje ni overflow del perfil.');
       }
     } else {
-      throw new Error('No se encontró CTA de mensaje ni overflow del perfil.');
-    }
-  } else {
-    const aria = (await messageBtn.getAttribute('aria-label')) ?? '';
-    if (/para negocios|for business/i.test(aria)) {
-      throw new Error('Selector de mensaje resolvió a un botón del header. Ajustar scope.');
+      const aria = (await messageBtn.getAttribute('aria-label')) ?? '';
+      if (/para negocios|for business/i.test(aria)) {
+        throw new Error('Selector de mensaje resolvió a un botón del header. Ajustar scope.');
+      }
+
+      await debug('Click CTA Enviar mensaje');
+      await messageBtn.scrollIntoViewIfNeeded().catch(() => {});
+      await messageBtn.click({ timeout: 8000, force: true });
     }
 
-    await debug('Click CTA Enviar mensaje');
-    await messageBtn.scrollIntoViewIfNeeded().catch(() => {});
-    await messageBtn.click({ timeout: 8000, force: true });
+    // -----------------------------
+    // 4) Esperar wrapper del overlay (overlay vs inline) con múltiples fallbacks
+    // -----------------------------
+    await page.waitForTimeout(500);
+
+    const containerCandidates = [
+      page.locator('.msg-overlay-conversation-bubble__content-wrapper').last(),
+      page.locator('.msg-s-message-list').last(),
+      page.locator('.msg-overlay-conversation-bubble').last(),
+      page.locator('[role="main"] .msg-conversation-listitem').last(),
+      page.locator('.msg-conversation__body').last(),
+      page.locator('.msg-thread').last(),
+      page.locator('[data-view-name*="conversation"]').last(),
+      page.locator('.conversation-wrapper').last(),
+      page.locator('main').last(),
+    ];
+
+    // Try each container candidate
+    for (const candidate of containerCandidates) {
+      try {
+        await candidate.waitFor({ state: 'visible', timeout: 2000 });
+        root = candidate;
+        const containerType = await candidate.evaluate(el => el.className || el.tagName);
+        await debug(\`Container detected: \${containerType}\`);
+        break;
+      } catch {
+        // Continue to next candidate
+      }
+    }
+
+    // ✅ FALLBACK: If no specific container found, use the page body but with more targeted selectors
+    if (!root) {
+      await debug('No specific conversation container found, using fallback to body');
+      root = page.locator('body');
+    }
   }
 
-  // -----------------------------
-  // 4) Esperar wrapper del overlay (overlay vs inline) con múltiples fallbacks
-  // -----------------------------
-  await page.waitForTimeout(500);
+  // ✅ Wait for chat content to fully load before extraction
+  await debug('Waiting for message content to load...');
 
-  const containerCandidates = [
-    page.locator('.msg-overlay-conversation-bubble__content-wrapper').last(),
-    page.locator('.msg-s-message-list').last(),
-    page.locator('.msg-overlay-conversation-bubble').last(),
-    page.locator('[role="main"] .msg-conversation-listitem').last(),
-    page.locator('.msg-conversation__body').last(),
-    page.locator('.msg-thread').last(),
-    page.locator('[data-view-name*="conversation"]').last(),
-    page.locator('.conversation-wrapper').last(),
-    page.locator('main').last(),
-  ];
-
-  let root = null;
-
-  // Try each container candidate
-  for (const candidate of containerCandidates) {
-    try {
-      await candidate.waitFor({ state: 'visible', timeout: 2000 });
-      root = candidate;
-      const containerType = await candidate.evaluate(el => el.className || el.tagName);
-      await debug(\`Container detected: \${containerType}\`);
-      break;
-    } catch {
-      // Continue to next candidate
-    }
+  // Wait for specific message indicators
+  try {
+    await root
+      .locator('.msg-s-event-listitem, .msg-s-message-group')
+      .first()
+      .waitFor({ timeout: 3000, state: 'visible' });
+    await debug('Message containers detected, proceeding with extraction');
+  } catch {
+    await debug('No structured message containers found after 3s, proceeding with fallback');
   }
 
-  // ✅ FALLBACK: If no specific container found, use the page body but with more targeted selectors
-  if (!root) {
-    await debug('No specific conversation container found, using fallback to body');
-    root = page.locator('body');
-  }
+  // Additional wait for dynamic content
+  await sleep(800);
 
   // -----------------------------
   // 5) Scroll to load all messages before extraction
@@ -364,7 +478,7 @@ async (page) => {
         }
         
       } catch (e) {
-        await debug(\`Scrolling error: \${e.message}\`);
+        await debug(\`Scrolling error: \${(e && e.message) ? e.message : String(e)}\`);
       }
       
       scrollAttempts++;
@@ -386,8 +500,270 @@ async (page) => {
   // -----------------------------
   // 6) Multiple extraction strategies - run ALL and return the best one
   // -----------------------------
-  const payload = await root.evaluate((rootEl) => {
+  const payload = await root.evaluate((rootEl, ctx) => {
+    const targetProfileUrl = (ctx?.profileUrl ?? '').toString();
     const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
+
+    // ✅ NEW: helpers for datetime + role (do not change existing behavior)
+    const normalizeUrl = (u) => {
+      const s = norm(u);
+      if (!s) return '';
+      try {
+        const url = new URL(s, document.baseURI);
+        let out = (url.origin + url.pathname).toLowerCase();
+        while (out.endsWith('/')) out = out.slice(0, -1);
+        return out;
+      } catch {
+        let out = s.toLowerCase();
+        out = out.split('#')[0].split('?')[0];
+        while (out.endsWith('/')) out = out.slice(0, -1);
+        return out;
+      }
+    };
+
+    const inferThreadProfileUrl = () => {
+      const selectors = [
+        '.msg-overlay-bubble-header__title a[href*="/in/"]',
+        '.msg-overlay-conversation-bubble__header a[href*="/in/"]',
+        '.msg-overlay-bubble-header a[href*="/in/"]',
+        '.msg-thread__link-to-profile a[href*="/in/"]',
+        'a.msg-thread__link-to-profile[href*="/in/"]',
+        '.msg-conversation-card__header a[href*="/in/"]',
+        '.msg-thread__header a[href*="/in/"]',
+      ];
+
+      for (const sel of selectors) {
+        const a = document.querySelector(sel);
+        const href = a && (a.getAttribute('href') || a.href);
+        if (href && href.includes('/in/')) {
+          // normalize relative hrefs
+          try {
+            const abs = new URL(href, document.baseURI).toString();
+            return abs;
+          } catch {
+            return href;
+          }
+        }
+      }
+
+      // last-resort: any profile link in the overlay header region
+      const broad = document.querySelector(
+        '.msg-overlay-container a[href*="/in/"], .msg-overlay-conversation-bubble a[href*="/in/"]'
+      );
+      const href = broad && (broad.getAttribute('href') || broad.href);
+      if (href && href.includes('/in/')) {
+        try {
+          const abs = new URL(href, document.baseURI).toString();
+          return abs;
+        } catch {
+          return href;
+        }
+      }
+
+      return '';
+    };
+
+    const targetProfileUrlNorm = normalizeUrl(targetProfileUrl || inferThreadProfileUrl() || '');
+
+    const pickDatetimeAttr = (node, selectors) => {
+      if (!node) return null;
+      for (const sel of selectors) {
+        const el = node.querySelector(sel);
+        if (!el) continue;
+
+        const raw =
+          norm(el.getAttribute?.('datetime')) ||
+          norm(el.getAttribute?.('data-time')) ||
+          norm(el.getAttribute?.('data-timestamp')) ||
+          norm(el.getAttribute?.('data-epoch')) ||
+          norm(el.getAttribute?.('data-event-time')) ||
+          // ✅ IMPORTANT: LinkedIn muchas veces lo pone acá
+          norm(el.getAttribute?.('aria-label')) ||
+          norm(el.getAttribute?.('title')) ||
+          norm(el.getAttribute?.('data-tooltip')) ||
+          norm(el.textContent);
+
+        if (raw) return raw;
+      }
+      return null;
+    };
+
+    const normalizeDatetime = (raw) => {
+      const s = norm(raw);
+      if (!s) return null;
+
+      // epoch seconds/millis
+      if (/^\\d{10}$/.test(s)) return new Date(parseInt(s, 10) * 1000).toISOString();
+      if (/^\\d{13}$/.test(s)) return new Date(parseInt(s, 10)).toISOString();
+
+      const d = new Date(s);
+      if (!isNaN(d.getTime())) return d.toISOString();
+
+      return s;
+    };
+
+    const inferRoleByLayout = (itemEl) => {
+  try {
+    if (!itemEl) return null;
+
+    // Elegimos un “bubble” razonable para medir
+    const bubble =
+      itemEl.querySelector(
+        '.msg-s-event-listitem__message-bubble,' +
+          ' .msg-s-event-listitem__body,' +
+          ' p.msg-s-event-listitem__body,' +
+          ' .msg-s-event-listitem__event'
+      ) || itemEl;
+
+    const r = bubble.getBoundingClientRect?.();
+    if (!r || !r.width) return null;
+
+    // Contenedor “grande” del hilo
+    const container =
+      bubble.closest(
+        '.msg-s-message-list-container,' +
+          ' .msg-s-message-list,' +
+          ' .msg-thread,' +
+          ' .msg-overlay-conversation-bubble__content-wrapper,' +
+          ' [data-view-name*="conversation"]'
+      ) || rootEl;
+
+    const cr = container.getBoundingClientRect?.();
+    if (!cr || !cr.width) return null;
+
+    // Umbrales adaptativos
+    const pad = Math.min(80, Math.max(24, cr.width * 0.12));
+    const distLeft = r.left - cr.left;
+    const distRight = cr.right - r.right;
+
+    // Si está pegado a la derecha => outbound (vos)
+    if (distRight < pad && distLeft > pad) return 'recruiter';
+
+    // Si está pegado a la izquierda => inbound (la otra persona)
+    if (distLeft < pad && distRight > pad) return 'candidate';
+
+    // Fallback por centro geométrico
+    const bubbleCenter = r.left + r.width / 2;
+    const containerCenter = cr.left + cr.width / 2;
+    const deadZone = cr.width * 0.05;
+
+    if (bubbleCenter > containerCenter + deadZone) return 'recruiter';
+    if (bubbleCenter < containerCenter - deadZone) return 'candidate';
+
+    return null;
+  } catch {
+    return null;
+  }
+};
+
+    const hasSelfHints = (node) => {
+      let cur = node;
+      let hops = 0;
+      while (cur && hops < 10) {
+        const cls = (cur.className || '').toString().toLowerCase();
+
+        if (
+          cls.includes('from-me') ||
+          cls.includes('is-from-me') ||
+          cls.includes('--me') ||
+          cls.includes('--self') ||
+          cls.includes('--mine') ||
+          cls.includes('own-message') ||
+          cls.includes('message--own')
+        ) {
+          return true;
+        }
+
+        try {
+          const attrBag = [
+            cur.getAttribute?.('data-message-author'),
+            cur.getAttribute?.('data-sender'),
+            cur.getAttribute?.('data-event-direction'),
+            cur.getAttribute?.('data-direction'),
+          ]
+            .filter(Boolean)
+            .join(' ')
+            .toLowerCase();
+
+          if (
+            attrBag.includes('self') ||
+            attrBag.includes('me') ||
+            attrBag.includes('outbound') ||
+            attrBag.includes('sent')
+          ) {
+            return true;
+          }
+        } catch {}
+
+        cur = cur.parentElement;
+        hops++;
+      }
+      return false;
+    };
+
+      const inferRoleByLinkedInClasses = (node) => {
+        try {
+          if (!node) return null;
+
+          // subimos al "item" real
+          const item =
+            node.closest?.('.msg-s-event-listitem') ||
+            node.querySelector?.('.msg-s-event-listitem') ||
+            null;
+
+          if (!item) return null;
+
+          const cls = (item.className || '').toString().toLowerCase();
+
+          // system events
+          if (cls.includes('msg-s-event-listitem--system')) return null;
+
+          // "other" = la otra persona
+          if (cls.includes('msg-s-event-listitem--other')) return 'candidate';
+
+          // también suele existir en el meta
+          const meta = item.parentElement?.querySelector?.('.msg-s-message-group__meta');
+          const metaCls = (meta?.className || '').toString().toLowerCase();
+          if (metaCls.includes('msg-s-message-group__meta--other')) return 'candidate';
+
+          // si es un event-listitem normal y NO es other, casi siempre sos vos
+          if (cls.includes('msg-s-event-listitem')) return 'recruiter';
+
+          return null;
+        } catch {
+          return null;
+        }
+      };
+
+      const detectRole = (itemEl, groupEl, senderName, senderUrl) => {
+        // ✅ NUEVO: primero clases de LinkedIn
+        const byClass =
+          inferRoleByLinkedInClasses(itemEl) || inferRoleByLinkedInClasses(groupEl);
+        if (byClass) return byClass;
+
+        // 1) DOM “self hints”
+        if (hasSelfHints(itemEl) || hasSelfHints(groupEl)) return 'recruiter';
+
+        // 2) Layout/alineación
+        const byLayout = inferRoleByLayout(itemEl);
+        if (byLayout) return byLayout;
+
+        // 3) Labels típicos
+        const name = norm(senderName).toLowerCase();
+        if (name === 'you' || name === 'tú' || name === 'tu' || name === 'vos' || name === 'yo') {
+          return 'recruiter';
+        }
+
+        // 4) URL-based inbound (yo lo dejaría MUY abajo o lo quitaría)
+        const sUrl = normalizeUrl(senderUrl || '');
+        if (sUrl && targetProfileUrlNorm && sUrl === targetProfileUrlNorm) return 'candidate';
+
+        // 5) fallback final
+        if (senderName) return 'candidate';
+        return null;
+      };
+
+
 
     const pickFirst = (node, selectors) => {
       if (!node) return null;
@@ -429,6 +805,68 @@ async (page) => {
 
       return { timeRaw: s, time: null };
     };
+
+    // ✅ NEW: best-effort conversation URN discovery (for GraphQL fallback)
+    const extractConversationUrn = (raw) => {
+      const s = norm(raw);
+      if (!s) return '';
+      const m1 = s.match(/urn:li:msg_conversation:\\([^\\)]+\\)/i);
+      if (m1 && m1[0]) return m1[0];
+      const m2 = s.match(/urn:li:msg_conversation:[^\\s\\)\\,"]+/i);
+      if (m2 && m2[0]) return m2[0];
+      // message URN often contains conversation URN inside
+      const m3 = s.match(/urn:li:msg_message:\\((urn:li:msg_conversation:[^\\)]+)\\,/i);
+      if (m3 && m3[1]) return m3[1];
+      const m4 = s.match(/urn:li:msg_message:\\((urn:li:msg_conversation:\\([^\\)]+\\))\\,/i);
+      if (m4 && m4[1]) return m4[1];
+      return '';
+    };
+
+    const findConversationUrnInDom = () => {
+      // 1) Look at URL
+      const fromUrl = extractConversationUrn(location.href);
+      if (fromUrl) return fromUrl;
+
+      // 2) Look at known urn-ish attributes on containers/items
+      const urnEls = Array.from(
+        rootEl.querySelectorAll(
+          '[data-event-urn],[data-entity-urn],[data-urn],[data-conversation-urn],[data-conversation-id]'
+        )
+      );
+
+      for (const el of urnEls) {
+        const attrs = [
+          'data-conversation-urn',
+          'data-entity-urn',
+          'data-event-urn',
+          'data-urn',
+          'data-conversation-id',
+        ];
+        for (const a of attrs) {
+          const v = el.getAttribute && el.getAttribute(a);
+          const urn = extractConversationUrn(v);
+          if (urn) return urn;
+        }
+      }
+
+      // 3) Last resort: scan a limited number of elements for URN-like strings
+      const sample = Array.from(rootEl.querySelectorAll('*')).slice(0, 600);
+      for (const el of sample) {
+        const v =
+          (el.getAttribute &&
+            (el.getAttribute('data-event-urn') ||
+              el.getAttribute('data-entity-urn') ||
+              el.getAttribute('data-urn'))) ||
+          '';
+        const urn = extractConversationUrn(v);
+        if (urn) return urn;
+      }
+
+      return '';
+    };
+
+    const conversationUrn = findConversationUrnInDom();
+    const threadProfileUrlDetected = inferThreadProfileUrl();
 
     // ✅ ENHANCED: Improved sender name extraction with more fallbacks
     const getSenderName = (group) => {
@@ -756,6 +1194,27 @@ async (page) => {
             }
           }
 
+          // ✅ NEW: datetime + role keys (keep existing keys intact)
+          const datetimeAttr =
+            pickDatetimeAttr(it, [
+              'time.msg-s-event-listitem__timestamp',
+              'time[datetime]',
+              'time',
+              '[data-time]',
+            ]) ||
+            pickDatetimeAttr(g, [
+              'time.msg-s-message-group__timestamp',
+              'time[datetime]',
+              'time',
+              '[data-time]',
+            ]);
+
+          const datetime =
+            normalizeDatetime(datetimeAttr) ||
+            (t.timeRaw ? normalizeDatetime(t.timeRaw) : null);
+
+          const role = detectRole(it, g, finalSenderName, finalSenderUrl);
+
           messages.push({
             id: messageId,
             senderName: finalSenderName || null,
@@ -764,6 +1223,8 @@ async (page) => {
             timeRaw: t.timeRaw || null,
             text,
             extractionStrategy: strategyName,
+            datetime,
+            role,
           });
         }
       }
@@ -809,13 +1270,20 @@ async (page) => {
     // ✅ GENERIC TEXT FALLBACK STRATEGY
     if (extractionResults.every(r => r.messagesFound === 0)) {
       console.log('[extract-debug] All structured strategies failed, trying generic text extraction');
-      const fallbackTexts = Array.from(rootEl.querySelectorAll('p, span, div'))
-        .map(el => norm(el.textContent))
-        .filter(text => text.length > 10 && text.length < 1000 && 
-                       !el.querySelector('input, button, a') &&
-                       !/^(send|enviar|type|escribir|profile|perfil)/i.test(text))
-        .slice(0, 50);
-      
+      const fallbackEls = Array.from(rootEl.querySelectorAll('p, span, div'))
+      .filter((el) => {
+        const text = norm(el.textContent);
+        return (
+          text.length > 10 &&
+          text.length < 1000 &&
+          !el.querySelector('input, button, a') &&
+          !/^(send|enviar|type|escribir|profile|perfil)/i.test(text)
+        );
+      })
+      .slice(0, 50);
+
+      const fallbackTexts = fallbackEls.map((el) => norm(el.textContent));
+        
       const fallbackMessages = [];
       for (let i = 0; i < fallbackTexts.length; i++) {
         fallbackMessages.push({
@@ -826,6 +1294,8 @@ async (page) => {
           timeRaw: null,
           text: fallbackTexts[i],
           extractionStrategy: 'generic-text-fallback',
+          datetime: null,
+          role: null,
         });
       }
       
@@ -881,6 +1351,8 @@ async (page) => {
       messages: ordered,
       bestStrategy: bestStrategy.strategyName,
       allStrategies: extractionResults,
+      conversationUrn: conversationUrn || null,
+      threadProfileUrlDetected: threadProfileUrlDetected || null,
       debugInfo: {
         strategiesAttempted: extractionResults.length,
         bestStrategyName: bestStrategy.strategyName,
@@ -893,7 +1365,45 @@ async (page) => {
         })),
       },
     };
-  });
+  }, { profileUrl });
+  // ✅ DEBUG: resumen de extracción (estrategias + urn + perfil detectado)
+  try {
+    await debug(
+      'Extraction summary -> ' +
+        JSON.stringify(
+          {
+            totalFound: payload?.totalFound,
+            bestStrategy: payload?.bestStrategy,
+            reversed: payload?.reversed,
+            conversationUrn: payload?.conversationUrn,
+            threadProfileUrlDetected: payload?.threadProfileUrlDetected,
+            strategies: payload?.debugInfo?.allResults?.slice(0, 10),
+          },
+          null,
+          2,
+        ).slice(0, 1800),
+    );
+  } catch {}
+
+  // ✅ DEBUG: sample de mensajes (los últimos 8) con datetime/role/text preview
+  try {
+    const all = Array.isArray(payload?.messages) ? payload.messages : [];
+    const sample = all.slice(Math.max(0, all.length - 8)).map((m) => ({
+      id: m?.id ?? null,
+      role: m?.role ?? null,
+      datetime: m?.datetime ?? null,
+      time: m?.time ?? null,
+      senderName: m?.senderName ?? null,
+      senderProfileUrl: m?.senderProfileUrl ?? null,
+      textPreview: (m?.text ?? '').toString().slice(0, 140),
+      extractionStrategy: m?.extractionStrategy ?? null,
+    }));
+
+    await debug(
+      'Messages sample(last 8) -> ' +
+        JSON.stringify({ count: all.length, sample }, null, 2).slice(0, 2200),
+    );
+  } catch {}
 
   let msgs = Array.isArray(payload?.messages) ? payload.messages : [];
   if (msgs.length > limit) msgs = msgs.slice(-limit);
@@ -928,6 +1438,8 @@ async (page) => {
             timeRaw: null,
             text: text,
             isFallback: true,
+            datetime: null,
+            role: null,
           });
         }
       }
@@ -952,8 +1464,305 @@ async (page) => {
       timeRaw: null,
       text: '[No messages could be extracted from this conversation. This may indicate the chat is empty, requires login, or uses a different interface structure.]',
       isPlaceholder: true,
+      datetime: null,
+      role: null,
     }];
   }
+
+  // ✅ TEST: LinkedIn GraphQL API fetch for testing
+  await debug('Testing LinkedIn GraphQL API fetch...');
+
+  const conversationUrn = (payload && payload.conversationUrn) ? String(payload.conversationUrn) : '';
+  const threadProfileUrlDetected = (payload && payload.threadProfileUrlDetected) ? String(payload.threadProfileUrlDetected) : '';
+
+  // ✅ NEW: dynamic URL builder (no hardcoded URN)
+  const baseGraphql = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql";
+  const queryId = "messengerMessages.5846eeb71c981f11e0134cb6626cc314";
+
+  const variablesRaw = conversationUrn ? \`(conversationUrn:\${conversationUrn})\` : '';
+  const testUrl = conversationUrn
+    ? \`\${baseGraphql}?queryId=\${encodeURIComponent(queryId)}&variables=\${encodeURIComponent(variablesRaw)}\`
+    : null;
+
+  let graphqlTestResult = null;
+  let graphqlMessages = null;
+
+  try {
+    if (!testUrl) {
+      graphqlTestResult = {
+        ok: false,
+        skipped: true,
+        reason: "No conversationUrn detected in DOM",
+        conversationUrn: conversationUrn || null,
+        threadProfileUrlDetected: threadProfileUrlDetected || null,
+      };
+      await debug('GraphQL test skipped (no conversationUrn detected)');
+    } else {
+      graphqlTestResult = await page.evaluate(async ({ testUrl, targetProfileUrl }) => {
+        try {
+          // Get CSRF token from multiple LinkedIn-specific sources
+          let csrf = null;
+          
+          // Strategy 1: Check window object properties
+          csrf = window.csrfToken || window._csrf || window.CSRF_TOKEN;
+          
+          // Strategy 2: Check meta tags with various names
+          if (!csrf) {
+            const metaSelectors = [
+              'meta[name="csrf-token"]',
+              'meta[name="_csrf"]',
+              'meta[name="csrf_token"]',
+              'meta[name="x-csrf-token"]',
+              'meta[property="csrf-token"]',
+              'meta[http-equiv="csrf-token"]'
+            ];
+            
+            for (const selector of metaSelectors) {
+              const meta = document.querySelector(selector);
+              if (meta) {
+                csrf = meta.getAttribute('content') || meta.getAttribute('value');
+                if (csrf) break;
+              }
+            }
+          }
+          
+          // Strategy 3: Check for LinkedIn-specific CSRF in script tags or data attributes
+          if (!csrf) {
+            // Look for CSRF in script tags containing LinkedIn config
+            const scripts = document.querySelectorAll('script');
+            for (const script of scripts) {
+              const text = script.textContent || script.innerHTML;
+              if (text && text.includes('csrf')) {
+                // Try to extract CSRF from various patterns
+                const patterns = [
+                  /"csrf[Tt]oken"\\s*:\\s*"([^"]+)"/,
+                  /'csrf[Tt]oken'\\s*:\\s*'([^']+)'/,
+                  /csrf[Tt]oken['"]*\\s*[=:]\\s*['"]([^'"]+)['"]/,
+                  /"_csrf"\\s*:\\s*"([^"]+)"/,
+                  /'_csrf'\\s*:\\s*'([^']+)'/
+                ];
+                
+                for (const pattern of patterns) {
+                  const match = text.match(pattern);
+                  if (match && match[1]) {
+                    csrf = match[1];
+                    break;
+                  }
+                }
+                if (csrf) break;
+              }
+            }
+          }
+          
+          // Strategy 4: Check for CSRF in data attributes on html/body
+          if (!csrf) {
+            const dataAttrs = ['data-csrf-token', 'data-csrf', 'data-x-csrf-token'];
+            for (const attr of dataAttrs) {
+              csrf = document.documentElement.getAttribute(attr) || document.body.getAttribute(attr);
+              if (csrf) break;
+            }
+          }
+          
+          // Strategy 5: Check for LinkedIn's client state or app config
+          if (!csrf && window.lix && window.lix.clientState) {
+            csrf = window.lix.clientState.csrfToken || window.lix.clientState.csrf;
+          }
+          
+          if (!csrf && window.appConfig) {
+            csrf = window.appConfig.csrfToken || window.appConfig.csrf;
+          }
+          
+          // Fallback
+          if (!csrf) {
+            csrf = 'no-csrf-found';
+          }
+
+          const res = await fetch(testUrl, {
+            method: "GET",
+            credentials: "include",
+            headers: {
+              "csrf-token": csrf,
+              "accept": "application/json",
+              "x-restli-protocol-version": "2.0.0",
+            },
+          });
+
+          let json = null;
+          let responseText = null;
+
+          try { json = await res.json(); }
+          catch { responseText = await res.text(); }
+
+          // Debug info about CSRF detection
+          const csrfDebugInfo = {
+            windowCsrfToken: !!window.csrfToken,
+            windowCsrf: !!window._csrf,
+            windowCSRFTOKEN: !!window.CSRF_TOKEN,
+            metaTagsChecked: document.querySelectorAll('meta[name*="csrf"], meta[property*="csrf"]').length,
+            scriptsWithCsrf: Array.from(document.querySelectorAll('script')).filter(s => (s.textContent || '').includes('csrf')).length,
+            hasLixClientState: !!(window.lix && window.lix.clientState),
+            hasAppConfig: !!window.appConfig,
+            foundCsrf: csrf !== 'no-csrf-found'
+          };
+
+          // ✅ NEW: best-effort parsing into message-like objects (may vary by queryId)
+          const extracted = [];
+          const seen = new Set();
+          const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
+
+          const buildProfileUrlFromMini = (mini) => {
+            const pid = mini && (mini.publicIdentifier || mini.publicIdentifierString || mini.publicIdentifierV2);
+            if (pid) return 'https://www.linkedin.com/in/' + pid;
+            return null;
+          };
+
+          const toIso = (ts) => {
+            if (typeof ts === 'number' && ts > 0) {
+              const ms = ts < 2e12 ? ts * 1000 : ts;
+              const d = new Date(ms);
+              if (!isNaN(d.getTime())) return d.toISOString();
+            }
+            return null;
+          };
+
+          const pushMsg = (m) => {
+            const text = norm(m.text);
+            if (!text) return;
+            const key = (m.senderName || '') + '||' + (m.datetime || '') + '||' + text;
+            if (seen.has(key)) return;
+            seen.add(key);
+            extracted.push(m);
+          };
+
+          const walk = (node) => {
+            if (!node) return;
+            if (Array.isArray(node)) return node.forEach(walk);
+            if (typeof node !== 'object') return;
+
+            const ec = node.eventContent || null;
+            if (ec) {
+              const msgEvent =
+                ec['com.linkedin.voyager.messaging.event.MessageEvent'] ||
+                ec['com.linkedin.voyager.messaging.event.MessageEventV2'] ||
+                ec.MessageEvent ||
+                ec.messageEvent ||
+                null;
+
+              if (msgEvent) {
+                const t =
+                  (msgEvent.attributedBody && (msgEvent.attributedBody.text || msgEvent.attributedBody.textV2)) ||
+                  (msgEvent.body && (msgEvent.body.text || msgEvent.body.messageText)) ||
+                  msgEvent.text;
+
+                const from = msgEvent.from || msgEvent.sender || node.from || node.sender || null;
+                const mini = (from && (from.miniProfile || from.miniProfileV2 || from.miniProfileUrn)) || node.miniProfile || null;
+                const senderName =
+                  (mini && (mini.firstName || mini.firstNameV2 || '')) +
+                  (mini && (mini.lastName || mini.lastNameV2) ? ' ' + (mini.lastName || mini.lastNameV2) : '');
+                const senderProfileUrl = buildProfileUrlFromMini(mini);
+
+                const createdAt = msgEvent.createdAt || msgEvent.time || msgEvent.timestamp || node.createdAt || node.time || node.timestamp;
+                const datetime = toIso(createdAt);
+
+                if (typeof t === 'string') {
+                  pushMsg({
+                    id: node.entityUrn || node.urn || node.eventUrn || node.messageUrn || null,
+                    senderName: norm(senderName) || null,
+                    senderProfileUrl: senderProfileUrl || null,
+                    time: null,
+                    timeRaw: null,
+                    text: norm(t),
+                    extractionStrategy: 'graphql-fallback',
+                    datetime,
+                    role: null,
+                  });
+                }
+              }
+            }
+
+            for (const k of Object.keys(node)) walk(node[k]);
+          };
+
+          if (json) walk(json);
+
+          return {
+            ok: res.ok,
+            status: res.status,
+            statusText: res.statusText,
+            headers: Object.fromEntries(res.headers.entries()),
+            responseText: responseText ? responseText.slice(0, 2000) : null, // Limit response size
+            csrf: csrf,
+            csrfDebug: csrfDebugInfo,
+            url: testUrl,
+            extractedMessages: extracted.slice(0, 200),
+            targetProfileUrl: targetProfileUrl || null,
+          };
+        } catch (e) {
+          return {
+            ok: false,
+            error: e.message,
+            csrf: 'error-getting-csrf',
+            csrfDebug: { error: 'Failed to detect CSRF token due to error' },
+            url: testUrl
+          };
+        }
+      }, { testUrl, targetProfileUrl: profileUrl });
+
+      graphqlMessages = Array.isArray(graphqlTestResult?.extractedMessages)
+        ? graphqlTestResult.extractedMessages
+        : null;
+
+      await debug(\`GraphQL API test result: \${JSON.stringify(graphqlTestResult, null, 2).slice(0, 500)}\`);
+    }
+  } catch (e) {
+    graphqlTestResult = {
+      ok: false,
+      error: \`GraphQL test failed: \${(e && e.message) ? e.message : String(e)}\`,
+      url: testUrl,
+      conversationUrn: conversationUrn || null
+    };
+    await debug(\`GraphQL API test error: \${(e && e.message) ? e.message : String(e)}\`);
+  }
+
+  // ✅ NEW: If DOM extraction failed, use GraphQL parsed messages as a fallback
+  if (
+    (msgs.length === 0 || !!msgs[0]?.isPlaceholder) &&
+    Array.isArray(graphqlMessages) &&
+    graphqlMessages.length > 0
+  ) {
+    await debug(\`Using GraphQL fallback messages: \${graphqlMessages.length}\`);
+    msgs = graphqlMessages;
+    if (msgs.length > limit) msgs = msgs.slice(-limit);
+  }
+    try {
+    await debug(
+      'Final msgs(after limit) -> ' +
+        JSON.stringify(
+          {
+            limit,
+            finalCount: msgs.length,
+            first: msgs[0]
+              ? {
+                  role: msgs[0].role ?? null,
+                  datetime: msgs[0].datetime ?? null,
+                  senderName: msgs[0].senderName ?? null,
+                  textPreview: (msgs[0].text ?? '').slice(0, 80),
+                }
+              : null,
+            last: msgs[msgs.length - 1]
+              ? {
+                  role: msgs[msgs.length - 1].role ?? null,
+                  datetime: msgs[msgs.length - 1].datetime ?? null,
+                  senderName: msgs[msgs.length - 1].senderName ?? null,
+                  textPreview: (msgs[msgs.length - 1].text ?? '').slice(0, 80),
+                }
+              : null,
+          },
+          null,
+          2,
+        ).slice(0, 1400),
+    );
+  } catch {}
 
   const result = {
     ok: true,
@@ -965,168 +1774,12 @@ async (page) => {
     messages: msgs,
     fallbacksUsed: payload?.fallbacksUsed || 'unknown',
     extractionStrategy: msgs[0]?.isPlaceholder ? 'placeholder' : 
-                       msgs[0]?.isFallback ? 'emergency-fallback' : 'standard',
+                       msgs[0]?.isFallback ? 'emergency-fallback' :
+                       msgs[0]?.extractionStrategy === 'graphql-fallback' ? 'graphql-fallback' : 'standard',
+    usedFastPath,
+    conversationUrn: conversationUrn || null,
+    threadProfileUrlDetected: threadProfileUrlDetected || null,
   };
-
-  // ✅ Wait for chat content to fully load before extraction
-  await debug('Waiting for message content to load...');
-  
-  // Wait for specific message indicators
-  try {
-    await page.waitForSelector('.msg-s-event-listitem, .msg-s-message-group', { 
-      timeout: 3000,
-      state: 'visible' 
-    });
-    await debug('Message containers detected, proceeding with extraction');
-  } catch {
-    await debug('No structured message containers found after 3s, proceeding with fallback');
-  }
-
-  // Additional wait for dynamic content
-  await sleep(800);
-
-  // ✅ TEST: LinkedIn GraphQL API fetch for testing
-  await debug('Testing LinkedIn GraphQL API fetch...');
-  
-  let graphqlTestResult = null;
-  try {
-    const url = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql" +
-      "?queryId=messengerMessages.5846eeb71c981f11e0134cb6626cc314" +
-      "&variables=(conversationUrn:urn%3Ali%3Amsg_conversation%3A%28urn%3Ali%3Afsd_profile%3AACoAAEGI9uQBNvuMbXy4c6ldqNLaiN8JclJJWdI%2C2-ZDZjMDVjZjgtNmNlMy00YjQwLTk2ZDUtOTcyODhjYmIxZjlhXzEwMA%3D%3D%29)";
-
-    graphqlTestResult = await page.evaluate(async (testUrl) => {
-      try {
-        // Get CSRF token from multiple LinkedIn-specific sources
-        let csrf = null;
-        
-        // Strategy 1: Check window object properties
-        csrf = window.csrfToken || window._csrf || window.CSRF_TOKEN;
-        
-        // Strategy 2: Check meta tags with various names
-        if (!csrf) {
-          const metaSelectors = [
-            'meta[name="csrf-token"]',
-            'meta[name="_csrf"]',
-            'meta[name="csrf_token"]',
-            'meta[name="x-csrf-token"]',
-            'meta[property="csrf-token"]',
-            'meta[http-equiv="csrf-token"]'
-          ];
-          
-          for (const selector of metaSelectors) {
-            const meta = document.querySelector(selector);
-            if (meta) {
-              csrf = meta.getAttribute('content') || meta.getAttribute('value');
-              if (csrf) break;
-            }
-          }
-        }
-        
-        // Strategy 3: Check for LinkedIn-specific CSRF in script tags or data attributes
-        if (!csrf) {
-          // Look for CSRF in script tags containing LinkedIn config
-          const scripts = document.querySelectorAll('script');
-          for (const script of scripts) {
-            const text = script.textContent || script.innerHTML;
-            if (text && text.includes('csrf')) {
-              // Try to extract CSRF from various patterns
-              const patterns = [
-                /"csrf[Tt]oken"\\s*:\\s*"([^"]+)"/,
-                /'csrf[Tt]oken'\\s*:\\s*'([^']+)'/,
-                /csrf[Tt]oken['"]*\\s*[=:]\\s*['"]([^'"]+)['"]/,
-                /"_csrf"\\s*:\\s*"([^"]+)"/,
-                /'_csrf'\\s*:\\s*'([^']+)'/
-              ];
-              
-              for (const pattern of patterns) {
-                const match = text.match(pattern);
-                if (match && match[1]) {
-                  csrf = match[1];
-                  break;
-                }
-              }
-              if (csrf) break;
-            }
-          }
-        }
-        
-        // Strategy 4: Check for CSRF in data attributes on html/body
-        if (!csrf) {
-          const dataAttrs = ['data-csrf-token', 'data-csrf', 'data-x-csrf-token'];
-          for (const attr of dataAttrs) {
-            csrf = document.documentElement.getAttribute(attr) || document.body.getAttribute(attr);
-            if (csrf) break;
-          }
-        }
-        
-        // Strategy 5: Check for LinkedIn's client state or app config
-        if (!csrf && window.lix && window.lix.clientState) {
-          csrf = window.lix.clientState.csrfToken || window.lix.clientState.csrf;
-        }
-        
-        if (!csrf && window.appConfig) {
-          csrf = window.appConfig.csrfToken || window.appConfig.csrf;
-        }
-        
-        // Fallback
-        if (!csrf) {
-          csrf = 'no-csrf-found';
-        }
-
-        const res = await fetch(testUrl, {
-          method: "GET",
-          credentials: "include",
-          headers: {
-            "csrf-token": csrf,
-            "accept": "application/json",
-            "x-restli-protocol-version": "2.0.0",
-          },
-        });
-
-        const responseText = await res.text();
-        
-        // Debug info about CSRF detection
-        const csrfDebugInfo = {
-          windowCsrfToken: !!window.csrfToken,
-          windowCsrf: !!window._csrf,
-          windowCSRFTOKEN: !!window.CSRF_TOKEN,
-          metaTagsChecked: document.querySelectorAll('meta[name*="csrf"], meta[property*="csrf"]').length,
-          scriptsWithCsrf: Array.from(document.querySelectorAll('script')).filter(s => (s.textContent || '').includes('csrf')).length,
-          hasLixClientState: !!(window.lix && window.lix.clientState),
-          hasAppConfig: !!window.appConfig,
-          foundCsrf: csrf !== 'no-csrf-found'
-        };
-        
-        return {
-          ok: res.ok,
-          status: res.status,
-          statusText: res.statusText,
-          headers: Object.fromEntries(res.headers.entries()),
-          responseText: responseText.slice(0, 2000), // Limit response size
-          csrf: csrf,
-          csrfDebug: csrfDebugInfo,
-          url: testUrl
-        };
-      } catch (e) {
-        return {
-          ok: false,
-          error: e.message,
-          csrf: 'error-getting-csrf',
-          csrfDebug: { error: 'Failed to detect CSRF token due to error' },
-          url: testUrl
-        };
-      }
-    }, url);
-
-    await debug(\`GraphQL API test result: \${JSON.stringify(graphqlTestResult, null, 2).slice(0, 500)}\`);
-  } catch (e) {
-    graphqlTestResult = {
-      ok: false,
-      error: \`GraphQL test failed: \${e.message}\`,
-      url: url
-    };
-    await debug(\`GraphQL API test error: \${e.message}\`);
-  }
 
   // Add GraphQL test result to the final result
   result.graphqlTest = graphqlTestResult;
