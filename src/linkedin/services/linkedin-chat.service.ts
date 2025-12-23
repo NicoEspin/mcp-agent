@@ -616,15 +616,72 @@ async (page) => {
       return text || null;
     };
 
+    // ✅ ENHANCED: Helper to find parent meta container for message items
+    const findParentMeta = (messageElement) => {
+      // Walk up the DOM to find the closest meta container
+      let current = messageElement;
+      let attempts = 0;
+      const maxAttempts = 10; // Prevent infinite loops
+      
+      while (current && current !== rootEl && attempts < maxAttempts) {
+        attempts++;
+        
+        // Check if current element or its siblings have meta info
+        const parent = current.parentElement;
+        if (!parent) break;
+        
+        // Look for meta container in the parent's children (siblings)
+        const metaInSiblings = parent.querySelector('.msg-s-message-group__meta');
+        if (metaInSiblings) {
+          return metaInSiblings;
+        }
+        
+        // Look for meta container in the parent itself
+        const metaInParent = parent.querySelector('.msg-s-message-group__meta');
+        if (metaInParent) {
+          return metaInParent;
+        }
+        
+        // Check previous siblings for meta containers
+        let sibling = current.previousElementSibling;
+        while (sibling) {
+          const metaInSibling = sibling.querySelector('.msg-s-message-group__meta');
+          if (metaInSibling) return metaInSibling;
+          
+          if (sibling.classList.contains('msg-s-message-group__meta')) {
+            return sibling;
+          }
+          
+          sibling = sibling.previousElementSibling;
+        }
+        
+        current = parent;
+      }
+      
+      return null;
+    };
+
     // ✅ STRATEGY EXTRACTION FUNCTION: Extract messages using a specific group selection strategy
     const extractWithStrategy = (strategyName, groupSelector, scopeEl = rootEl) => {
       const groups = Array.from(scopeEl.querySelectorAll(groupSelector));
       const messages = [];
       
       for (const g of groups) {
-        const senderName = getSenderName(g);
-        const senderProfileUrl = getSenderUrl(g);
-        const groupTime = getGroupTime(g);
+        let senderName = getSenderName(g);
+        let senderProfileUrl = getSenderUrl(g);
+        let groupTime = getGroupTime(g);
+
+        // ✅ ENHANCED: If this is a message item without sender info, find the parent meta
+        if (g.classList.contains('msg-s-event-listitem') && !senderName && !senderProfileUrl) {
+          const parentMeta = findParentMeta(g);
+          if (parentMeta) {
+            senderName = getSenderName(parentMeta);
+            senderProfileUrl = getSenderUrl(parentMeta);
+            if (!groupTime.time) {
+              groupTime = getGroupTime(parentMeta);
+            }
+          }
+        }
 
         let items = [];
         
@@ -633,6 +690,38 @@ async (page) => {
           items = [g];
         } else {
           items = Array.from(g.querySelectorAll('li.msg-s-message-group__message, li.msg-s-event-listitem, .msg-s-event-listitem'));
+          
+          // ✅ ENHANCED: For meta containers, look for related message items in siblings/descendants
+          if (g.classList.contains('msg-s-message-group__meta')) {
+            const parent = g.parentElement;
+            if (parent) {
+              // Look for message items that come after this meta container
+              let nextSibling = g.nextElementSibling;
+              const relatedItems = [];
+              
+              while (nextSibling) {
+                if (nextSibling.classList.contains('msg-s-event-listitem') || 
+                    nextSibling.classList.contains('msg-s-message-list__event')) {
+                  relatedItems.push(nextSibling);
+                }
+                
+                // Also check within the sibling for nested items
+                const nestedItems = nextSibling.querySelectorAll('.msg-s-event-listitem');
+                relatedItems.push(...Array.from(nestedItems));
+                
+                nextSibling = nextSibling.nextElementSibling;
+                
+                // Stop if we hit another meta container (different sender)
+                if (nextSibling && nextSibling.querySelector('.msg-s-message-group__meta')) {
+                  break;
+                }
+              }
+              
+              if (relatedItems.length > 0) {
+                items.push(...relatedItems);
+              }
+            }
+          }
         }
 
         // Fallback item extraction
@@ -655,10 +744,22 @@ async (page) => {
           const t = getItemTime(it, groupTime);
           const messageId = it.getAttribute?.('data-event-urn') || it.getAttribute?.('data-message-id') || it.id || \`\${strategyName}-msg-\${messages.length}\`;
 
+          // ✅ ENHANCED: For individual message items, try to get sender info from parent meta if not available
+          let finalSenderName = senderName;
+          let finalSenderUrl = senderProfileUrl;
+          
+          if (!finalSenderName || !finalSenderUrl) {
+            const itemMeta = findParentMeta(it);
+            if (itemMeta) {
+              finalSenderName = finalSenderName || getSenderName(itemMeta);
+              finalSenderUrl = finalSenderUrl || getSenderUrl(itemMeta);
+            }
+          }
+
           messages.push({
             id: messageId,
-            senderName: senderName || null,
-            senderProfileUrl: senderProfileUrl || null,
+            senderName: finalSenderName || null,
+            senderProfileUrl: finalSenderUrl || null,
             time: t.time || null,
             timeRaw: t.timeRaw || null,
             text,
