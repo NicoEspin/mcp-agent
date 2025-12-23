@@ -1618,6 +1618,87 @@ async (page) => {
                        msgs[0]?.isFallback ? 'emergency-fallback' : 'standard',
   };
 
+  // ✅ TEST: LinkedIn GraphQL API fetch in authenticated messaging context
+  await debug('Testing LinkedIn GraphQL API fetch in authenticated messaging context...');
+  
+  let graphqlTestResult = null;
+  try {
+    const graphqlUrl = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql" +
+      "?queryId=messengerMessages.5846eeb71c981f11e0134cb6626cc314" +
+      "&variables=(conversationUrn:urn%3Ali%3Amsg_conversation%3A%28urn%3Ali%3Afsd_profile%3AACoAAEGI9uQBNvuMbXy4c6ldqNLaiN8JclJJWdI%2C2-ZDZjMDVjZjgtNmNlMy00YjQwLTk2ZDUtOTcyODhjYmIxZjlhXzEwMA%3D%3D%29)";
+
+    graphqlTestResult = await page.evaluate(async (testUrl) => {
+      try {
+        // Enhanced cookie and context check in authenticated messaging interface
+        const cookies = document.cookie.split(';');
+        const cookieMap = {};
+        
+        // Parse all cookies into a map
+        for (const cookie of cookies) {
+          const [name, value] = cookie.trim().split('=');
+          if (name && value) {
+            cookieMap[name] = decodeURIComponent(value);
+          }
+        }
+        
+        // Check authentication context
+        const authContext = {
+          li_at_present: !!cookieMap.li_at,
+          jsessionid_present: !!cookieMap.JSESSIONID,
+          total_cookies: cookies.length,
+          url: window.location.href,
+          user_agent: navigator.userAgent,
+          is_messaging_page: window.location.href.includes('/messaging/') || 
+                             !!document.querySelector('.msg-overlay-conversation-bubble') ||
+                             !!document.querySelector('.messaging-thread-detail'),
+          li_at_length: cookieMap.li_at ? cookieMap.li_at.length : 0,
+          jsessionid_preview: cookieMap.JSESSIONID ? cookieMap.JSESSIONID.slice(0, 20) + '...' : null
+        };
+
+        // Try simple authenticated request first
+        const testResponse = await fetch(testUrl, {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            "accept": "application/json",
+            "x-restli-protocol-version": "2.0.0",
+          },
+        });
+
+        const responseText = await testResponse.text();
+        
+        return {
+          ok: testResponse.ok,
+          status: testResponse.status,
+          statusText: testResponse.statusText,
+          authContext: authContext,
+          responsePreview: responseText.slice(0, 200),
+          url: testUrl
+        };
+      } catch (error) {
+        return {
+          ok: false,
+          status: 0,
+          error: error.message,
+          authContext: { error: "Could not check auth context" },
+          url: testUrl
+        };
+      }
+    }, graphqlUrl);
+
+    await debug(`GraphQL API test in messaging context result: ${JSON.stringify(graphqlTestResult, null, 2).slice(0, 800)}`);
+  } catch (e) {
+    graphqlTestResult = {
+      ok: false,
+      error: `GraphQL test failed: ${e.message}`,
+      url: graphqlUrl
+    };
+    await debug(`GraphQL API test error: ${e.message}`);
+  }
+  
+  // Add GraphQL test result to the final result
+  result.graphqlTest = graphqlTestResult;
+
   // ✅ Wait for chat content to fully load before extraction
   await debug('Waiting for message content to load...');
   
@@ -1635,24 +1716,33 @@ async (page) => {
   // Additional wait for dynamic content
   await sleep(800);
 
-  // ✅ TEST: LinkedIn GraphQL API fetch for testing
-  await debug('Testing LinkedIn GraphQL API fetch...');
-  
-  let graphqlTestResult = null;
-  try {
-    const url = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql" +
-      "?queryId=messengerMessages.5846eeb71c981f11e0134cb6626cc314" +
-      "&variables=(conversationUrn:urn%3Ali%3Amsg_conversation%3A%28urn%3Ali%3Afsd_profile%3AACoAAEGI9uQBNvuMbXy4c6ldqNLaiN8JclJJWdI%2C2-ZDZjMDVjZjgtNmNlMy00YjQwLTk2ZDUtOTcyODhjYmIxZjlhXzEwMA%3D%3D%29)";
+  // ✅ EXTRACT MESSAGES (moved from line 597)
+  const payload = await root.evaluate((rootEl) => {
+    const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
 
-    graphqlTestResult = await page.evaluate(async (testUrl) => {
-      try {
-        // Enhanced CSRF token extraction with comprehensive LinkedIn-specific strategies
-        let csrf = null;
-        let debugInfo = {
-          strategiesAttempted: 0,
-          strategiesSuccessful: 0,
-          details: []
-        };
+    const pickFirst = (node, selectors) => {
+      if (!node) return null;
+      for (const sel of selectors) {
+        const el = node.querySelector(sel);
+        if (!el) continue;
+        const raw =
+          norm(el.getAttribute?.('aria-label')) ||
+          norm(el.getAttribute?.('datetime')) ||
+          norm(el.textContent);
+        if (raw) return raw;
+      }
+      return null;
+    };
+
+    // ✅ ENHANCED: Comprehensive datetime extraction with LinkedIn date grouping support
+    const extractDateTime = (timeRaw, dateContext = null) => {
+      const s = norm(timeRaw);
+      if (!s) return { timeRaw: null, time: null, datetime: null, dateContext: dateContext };
+
+      // Parse time component with multiple fallbacks
+      let parsedTime = null;
+      let hour24 = null;
+      let minute = null;
         
         // Strategy 1: Check window object properties (LinkedIn globals)
         debugInfo.strategiesAttempted++;
