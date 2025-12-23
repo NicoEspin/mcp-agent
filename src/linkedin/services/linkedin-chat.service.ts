@@ -985,6 +985,67 @@ async (page) => {
   // Additional wait for dynamic content
   await sleep(800);
 
+  // ✅ TEST: LinkedIn GraphQL API fetch for testing
+  await debug('Testing LinkedIn GraphQL API fetch...');
+  
+  let graphqlTestResult = null;
+  try {
+    const url = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql" +
+      "?queryId=messengerMessages.5846eeb71c981f11e0134cb6626cc314" +
+      "&variables=(conversationUrn:urn%3Ali%3Amsg_conversation%3A%28urn%3Ali%3Afsd_profile%3AACoAAEGI9uQBNvuMbXy4c6ldqNLaiN8JclJJWdI%2C2-ZDZjMDVjZjgtNmNlMy00YjQwLTk2ZDUtOTcyODhjYmIxZjlhXzEwMA%3D%3D%29)";
+
+    graphqlTestResult = await page.evaluate(async (testUrl) => {
+      try {
+        // Get CSRF token from page
+        const csrf = window.csrfToken || 
+                    document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ||
+                    document.querySelector('meta[name="_csrf"]')?.getAttribute('content') ||
+                    'no-csrf-found';
+
+        const res = await fetch(testUrl, {
+          method: "GET",
+          credentials: "include",
+          headers: {
+            "csrf-token": csrf,
+            "accept": "application/json",
+            "x-restli-protocol-version": "2.0.0",
+          },
+        });
+
+        const responseText = await res.text();
+        
+        return {
+          ok: res.ok,
+          status: res.status,
+          statusText: res.statusText,
+          headers: Object.fromEntries(res.headers.entries()),
+          responseText: responseText.slice(0, 2000), // Limit response size
+          csrf: csrf,
+          url: testUrl
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          error: e.message,
+          csrf: 'error-getting-csrf',
+          url: testUrl
+        };
+      }
+    }, url);
+
+    await debug(\`GraphQL API test result: \${JSON.stringify(graphqlTestResult, null, 2).slice(0, 500)}\`);
+  } catch (e) {
+    graphqlTestResult = {
+      ok: false,
+      error: \`GraphQL test failed: \${e.message}\`,
+      url: url
+    };
+    await debug(\`GraphQL API test error: \${e.message}\`);
+  }
+
+  // Add GraphQL test result to the final result
+  result.graphqlTest = graphqlTestResult;
+
   // ✅ return object (not JSON.stringify)
   return result;
 }
