@@ -996,11 +996,82 @@ async (page) => {
 
     graphqlTestResult = await page.evaluate(async (testUrl) => {
       try {
-        // Get CSRF token from page
-        const csrf = window.csrfToken || 
-                    document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') ||
-                    document.querySelector('meta[name="_csrf"]')?.getAttribute('content') ||
-                    'no-csrf-found';
+        // Get CSRF token from multiple LinkedIn-specific sources
+        let csrf = null;
+        
+        // Strategy 1: Check window object properties
+        csrf = window.csrfToken || window._csrf || window.CSRF_TOKEN;
+        
+        // Strategy 2: Check meta tags with various names
+        if (!csrf) {
+          const metaSelectors = [
+            'meta[name="csrf-token"]',
+            'meta[name="_csrf"]',
+            'meta[name="csrf_token"]',
+            'meta[name="x-csrf-token"]',
+            'meta[property="csrf-token"]',
+            'meta[http-equiv="csrf-token"]'
+          ];
+          
+          for (const selector of metaSelectors) {
+            const meta = document.querySelector(selector);
+            if (meta) {
+              csrf = meta.getAttribute('content') || meta.getAttribute('value');
+              if (csrf) break;
+            }
+          }
+        }
+        
+        // Strategy 3: Check for LinkedIn-specific CSRF in script tags or data attributes
+        if (!csrf) {
+          // Look for CSRF in script tags containing LinkedIn config
+          const scripts = document.querySelectorAll('script');
+          for (const script of scripts) {
+            const text = script.textContent || script.innerHTML;
+            if (text && text.includes('csrf')) {
+              // Try to extract CSRF from various patterns
+              const patterns = [
+                /"csrf[Tt]oken"\\s*:\\s*"([^"]+)"/,
+                /'csrf[Tt]oken'\\s*:\\s*'([^']+)'/,
+                /csrf[Tt]oken['"]*\\s*[=:]\\s*['"]([^'"]+)['"]/,
+                /"_csrf"\\s*:\\s*"([^"]+)"/,
+                /'_csrf'\\s*:\\s*'([^']+)'/
+              ];
+              
+              for (const pattern of patterns) {
+                const match = text.match(pattern);
+                if (match && match[1]) {
+                  csrf = match[1];
+                  break;
+                }
+              }
+              if (csrf) break;
+            }
+          }
+        }
+        
+        // Strategy 4: Check for CSRF in data attributes on html/body
+        if (!csrf) {
+          const dataAttrs = ['data-csrf-token', 'data-csrf', 'data-x-csrf-token'];
+          for (const attr of dataAttrs) {
+            csrf = document.documentElement.getAttribute(attr) || document.body.getAttribute(attr);
+            if (csrf) break;
+          }
+        }
+        
+        // Strategy 5: Check for LinkedIn's client state or app config
+        if (!csrf && window.lix && window.lix.clientState) {
+          csrf = window.lix.clientState.csrfToken || window.lix.clientState.csrf;
+        }
+        
+        if (!csrf && window.appConfig) {
+          csrf = window.appConfig.csrfToken || window.appConfig.csrf;
+        }
+        
+        // Fallback
+        if (!csrf) {
+          csrf = 'no-csrf-found';
+        }
 
         const res = await fetch(testUrl, {
           method: "GET",
@@ -1014,6 +1085,18 @@ async (page) => {
 
         const responseText = await res.text();
         
+        // Debug info about CSRF detection
+        const csrfDebugInfo = {
+          windowCsrfToken: !!window.csrfToken,
+          windowCsrf: !!window._csrf,
+          windowCSRFTOKEN: !!window.CSRF_TOKEN,
+          metaTagsChecked: document.querySelectorAll('meta[name*="csrf"], meta[property*="csrf"]').length,
+          scriptsWithCsrf: Array.from(document.querySelectorAll('script')).filter(s => (s.textContent || '').includes('csrf')).length,
+          hasLixClientState: !!(window.lix && window.lix.clientState),
+          hasAppConfig: !!window.appConfig,
+          foundCsrf: csrf !== 'no-csrf-found'
+        };
+        
         return {
           ok: res.ok,
           status: res.status,
@@ -1021,6 +1104,7 @@ async (page) => {
           headers: Object.fromEntries(res.headers.entries()),
           responseText: responseText.slice(0, 2000), // Limit response size
           csrf: csrf,
+          csrfDebug: csrfDebugInfo,
           url: testUrl
         };
       } catch (e) {
@@ -1028,6 +1112,7 @@ async (page) => {
           ok: false,
           error: e.message,
           csrf: 'error-getting-csrf',
+          csrfDebug: { error: 'Failed to detect CSRF token due to error' },
           url: testUrl
         };
       }
