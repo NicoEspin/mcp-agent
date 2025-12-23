@@ -1783,36 +1783,42 @@ async (page) => {
           }
         }
         
-        // Strategy 6: Check cookies for CSRF tokens
+        // Strategy 6: Check cookies for CSRF tokens AND JSESSIONID
         if (!csrf) {
           debugInfo.strategiesAttempted++;
           try {
             const cookies = document.cookie.split(';');
-            const csrfCookieNames = ['csrf_token', 'csrftoken', 'CSRF-TOKEN', 'X-CSRF-TOKEN', 'li_csrf'];
+            // LinkedIn-specific tokens including JSESSIONID
+            const tokenCookieNames = ['csrf_token', 'csrftoken', 'CSRF-TOKEN', 'X-CSRF-TOKEN', 'li_csrf', 'JSESSIONID', 'jsessionid'];
             
             for (const cookie of cookies) {
               const [name, value] = cookie.trim().split('=');
-              if (csrfCookieNames.includes(name) && value && value.length > 10) {
+              if (tokenCookieNames.includes(name) && value && value.length > 5) { // Lower threshold for JSESSIONID
                 csrf = decodeURIComponent(value);
                 debugInfo.strategiesSuccessful++;
                 debugInfo.details.push(\`Found in cookie: \${name}\`);
                 break;
               }
             }
+            
+            // Special handling: Log all cookies for debugging
+            debugInfo.details.push(\`Total cookies found: \${cookies.length}\`);
+            debugInfo.details.push(\`Cookie names: \${cookies.map(c => c.split('=')[0].trim()).join(', ')}\`);
+            
           } catch (e) {
             debugInfo.details.push(\`Cookie parsing error: \${e.message}\`);
           }
         }
         
-        // Strategy 7: Check local/session storage
+        // Strategy 7: Check local/session storage (including JSESSIONID variants)
         if (!csrf) {
           debugInfo.strategiesAttempted++;
           try {
-            const storageKeys = ['csrf_token', 'csrfToken', 'voyager_csrf', 'li_csrf'];
+            const storageKeys = ['csrf_token', 'csrfToken', 'voyager_csrf', 'li_csrf', 'JSESSIONID', 'jsessionid', 'li_session'];
             
             for (const key of storageKeys) {
               let token = localStorage.getItem(key) || sessionStorage.getItem(key);
-              if (token && token.length > 10) {
+              if (token && token.length > 5) { // Lower threshold for session IDs
                 csrf = token;
                 debugInfo.strategiesSuccessful++;
                 debugInfo.details.push(\`Found in storage: \${key}\`);
