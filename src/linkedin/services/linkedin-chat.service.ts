@@ -373,27 +373,51 @@ async (page) => {
         return headers.length;
       });
     };
+
+    // Check for loading indicators and wait if present
+    const waitForLoading = async () => {
+      const hasLoading = await page.evaluate(() => {
+        const indicators = [
+          '.loading', '.spinner', '[data-loading="true"]',
+          '.msg-s-message-list-loading', '.conversation-loading',
+          '.artdeco-spinner', '.loader'
+        ];
+        return indicators.some(sel => document.querySelector(sel));
+      }).catch(() => false);
+      
+      if (hasLoading) {
+        await debug('Loading indicator detected, waiting...');
+        await sleep(2000);
+        return true;
+      }
+      return false;
+    };
     
-    let previousMessageCount = 0;
-    let currentMessageCount = 0;
-    let previousDateHeaders = 0;
-    let currentDateHeaders = 0;
-    let scrollAttempts = 0;
-    const maxScrollAttempts = 25; // Increased for longer chat histories
-    const scrollDelay = 1000; // Increased delay for better loading
-    let noProgressCount = 0;
+    let totalScrollAttempts = 0;
+    const maxTotalAttempts = 40;
+    const scrollDelay = 800;
+    let initialMessageCount = 0;
+    let initialDateHeaders = 0;
     
-    // Initial counts
-    currentMessageCount = await countMessages();
-    currentDateHeaders = await countDateHeaders();
+    // Get initial counts
+    initialMessageCount = await countMessages();
+    initialDateHeaders = await countDateHeaders();
     
-    await debug(\`Initial state: \${currentMessageCount} messages, \${currentDateHeaders} date headers\`);
+    await debug(\`Initial state: \${initialMessageCount} messages, \${initialDateHeaders} date headers\`);
+    
+    // 🔄 PHASE 1: Scroll UP to load ALL older messages
+    await debug('=== PHASE 1: Loading older messages by scrolling UP ===');
+    
+    let previousMessageCount = initialMessageCount;
+    let currentMessageCount = initialMessageCount;
+    let upScrollAttempts = 0;
+    const maxUpScrolls = 20;
+    let noUpProgressCount = 0;
     
     do {
       previousMessageCount = currentMessageCount;
-      previousDateHeaders = currentDateHeaders;
       
-      // Multiple scrolling strategies for maximum message loading
+      // Multiple UP scrolling strategies
       try {
         // Strategy 1: Scroll to absolute top
         await scrollContainer.evaluate((el) => {
@@ -401,103 +425,166 @@ async (page) => {
         });
         await sleep(200);
         
-        // Strategy 2: Keyboard navigation to top
+        // Strategy 2: Keyboard navigation UP
         await scrollContainer.focus().catch(() => {});
         await scrollContainer.press('Home').catch(() => {});
         await sleep(200);
         
-        // Strategy 3: Page Up multiple times
+        // Strategy 3: Multiple Page Up presses
         for (let i = 0; i < 5; i++) {
           await scrollContainer.press('PageUp').catch(() => {});
-          await sleep(150);
+          await sleep(100);
         }
         
-        // Strategy 4: Try Ctrl+Home for document top
+        // Strategy 4: Ctrl+Home for document top
         await page.keyboard.down('Control').catch(() => {});
         await page.keyboard.press('Home').catch(() => {});
         await page.keyboard.up('Control').catch(() => {});
         await sleep(200);
         
-        // Strategy 5: Mouse wheel scrolling
-        if (scrollAttempts % 3 === 0) {
+        // Strategy 5: Mouse wheel UP scrolling
+        if (upScrollAttempts % 3 === 0) {
           await scrollContainer.hover().catch(() => {});
           for (let i = 0; i < 10; i++) {
-            await page.mouse.wheel(0, -500).catch(() => {});
+            await page.mouse.wheel(0, -800).catch(() => {});
             await sleep(50);
           }
         }
         
       } catch (e) {
-        await debug(\`Scrolling strategy error: \${e.message}\`);
+        await debug(\`UP scroll strategy error: \${e.message}\`);
       }
       
-      // Wait for content to load
       await sleep(scrollDelay);
-      
-      // Check for loading indicators and wait if present
-      const hasLoading = await page.evaluate(() => {
-        const indicators = [
-          '.loading', '.spinner', '[data-loading="true"]',
-          '.msg-s-message-list-loading', '.conversation-loading'
-        ];
-        return indicators.some(sel => document.querySelector(sel));
-      }).catch(() => false);
-      
-      if (hasLoading) {
-        await debug('Loading indicator detected, waiting longer...');
-        await sleep(2000);
-      }
+      await waitForLoading();
       
       // Update counts
       currentMessageCount = await countMessages();
-      currentDateHeaders = await countDateHeaders();
-      
       const messageProgress = currentMessageCount - previousMessageCount;
-      const dateProgress = currentDateHeaders - previousDateHeaders;
-      const hasProgress = messageProgress > 0 || dateProgress > 0;
       
-      await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages (+\${messageProgress}), \${currentDateHeaders} date headers (+\${dateProgress})\`);
+      await debug(\`UP Scroll \${upScrollAttempts + 1}: \${currentMessageCount} messages (+\${messageProgress})\`);
       
-      if (!hasProgress) {
-        noProgressCount++;
+      if (messageProgress <= 0) {
+        noUpProgressCount++;
       } else {
-        noProgressCount = 0;
+        noUpProgressCount = 0;
       }
       
-      scrollAttempts++;
+      upScrollAttempts++;
+      totalScrollAttempts++;
       
-      // Continue if we're making progress or haven't reached minimum attempts
-      const shouldContinue = (hasProgress && scrollAttempts < maxScrollAttempts) || 
-                            (scrollAttempts < 5) || // minimum attempts regardless
-                            (noProgressCount < 3); // allow some no-progress attempts
+      const shouldContinueUp = (messageProgress > 0 && upScrollAttempts < maxUpScrolls) || 
+                              (upScrollAttempts < 3) || 
+                              (noUpProgressCount < 2);
       
-      if (!shouldContinue) break;
+      if (!shouldContinueUp) break;
       
-      // Adaptive delay based on progress
-      const adaptiveDelay = hasProgress ? scrollDelay : scrollDelay * 1.5;
-      await sleep(adaptiveDelay);
-      
-    } while (scrollAttempts < maxScrollAttempts);
+    } while (upScrollAttempts < maxUpScrolls && totalScrollAttempts < maxTotalAttempts);
     
-    await debug(\`Comprehensive scrolling completed. Final: \${currentMessageCount} messages, \${currentDateHeaders} date headers, \${scrollAttempts} attempts\`);
+    const messagesAfterUpScroll = currentMessageCount;
+    await debug(\`=== UP SCROLL COMPLETE: \${messagesAfterUpScroll} total messages (+\${messagesAfterUpScroll - initialMessageCount} from scrolling up) ===\`);
     
-    // Final scroll to ensure we're at the very top
+    // 🔄 PHASE 2: Scroll DOWN to load ALL newer messages  
+    await debug('=== PHASE 2: Loading newer messages by scrolling DOWN ===');
+    
+    previousMessageCount = messagesAfterUpScroll;
+    currentMessageCount = messagesAfterUpScroll;
+    let downScrollAttempts = 0;
+    const maxDownScrolls = 20;
+    let noDownProgressCount = 0;
+    
+    do {
+      previousMessageCount = currentMessageCount;
+      
+      // Multiple DOWN scrolling strategies
+      try {
+        // Strategy 1: Scroll to absolute bottom
+        await scrollContainer.evaluate((el) => {
+          el.scrollTo({ top: el.scrollHeight, behavior: 'instant' });
+        });
+        await sleep(200);
+        
+        // Strategy 2: Keyboard navigation DOWN
+        await scrollContainer.focus().catch(() => {});
+        await scrollContainer.press('End').catch(() => {});
+        await sleep(200);
+        
+        // Strategy 3: Multiple Page Down presses
+        for (let i = 0; i < 5; i++) {
+          await scrollContainer.press('PageDown').catch(() => {});
+          await sleep(100);
+        }
+        
+        // Strategy 4: Ctrl+End for document bottom
+        await page.keyboard.down('Control').catch(() => {});
+        await page.keyboard.press('End').catch(() => {});
+        await page.keyboard.up('Control').catch(() => {});
+        await sleep(200);
+        
+        // Strategy 5: Mouse wheel DOWN scrolling
+        if (downScrollAttempts % 3 === 0) {
+          await scrollContainer.hover().catch(() => {});
+          for (let i = 0; i < 10; i++) {
+            await page.mouse.wheel(0, 800).catch(() => {});
+            await sleep(50);
+          }
+        }
+        
+      } catch (e) {
+        await debug(\`DOWN scroll strategy error: \${e.message}\`);
+      }
+      
+      await sleep(scrollDelay);
+      await waitForLoading();
+      
+      // Update counts
+      currentMessageCount = await countMessages();
+      const messageProgress = currentMessageCount - previousMessageCount;
+      
+      await debug(\`DOWN Scroll \${downScrollAttempts + 1}: \${currentMessageCount} messages (+\${messageProgress})\`);
+      
+      if (messageProgress <= 0) {
+        noDownProgressCount++;
+      } else {
+        noDownProgressCount = 0;
+      }
+      
+      downScrollAttempts++;
+      totalScrollAttempts++;
+      
+      const shouldContinueDown = (messageProgress > 0 && downScrollAttempts < maxDownScrolls) || 
+                                (downScrollAttempts < 3) || 
+                                (noDownProgressCount < 2);
+      
+      if (!shouldContinueDown) break;
+      
+    } while (downScrollAttempts < maxDownScrolls && totalScrollAttempts < maxTotalAttempts);
+    
+    const finalMessageCount = currentMessageCount;
+    const finalDateHeaders = await countDateHeaders();
+    
+    await debug(\`=== DOWN SCROLL COMPLETE: \${finalMessageCount} total messages (+\${finalMessageCount - messagesAfterUpScroll} from scrolling down) ===\`);
+    
+    // Final scroll to top for consistent extraction starting point
     try {
       await scrollContainer.evaluate((el) => {
         el.scrollTo({ top: 0, behavior: 'instant' });
       });
       await sleep(500);
     } catch (e) {
-      await debug(\`Final scroll error: \${e.message}\`);
+      await debug(\`Final positioning scroll error: \${e.message}\`);
     }
     
-    // Final wait for content to settle
-    await sleep(1500);
+    await debug(\`BI-DIRECTIONAL SCROLL COMPLETE: \${finalMessageCount} total messages (\${finalMessageCount - initialMessageCount} new), \${finalDateHeaders} date headers, \${totalScrollAttempts} total attempts\`);
     
     return {
-      finalMessageCount: currentMessageCount,
-      finalDateHeaders: currentDateHeaders,
-      scrollAttempts: scrollAttempts
+      finalMessageCount: finalMessageCount,
+      finalDateHeaders: finalDateHeaders,
+      scrollAttempts: totalScrollAttempts,
+      upScrollAttempts: upScrollAttempts,
+      downScrollAttempts: downScrollAttempts,
+      messagesFromUpScroll: messagesAfterUpScroll - initialMessageCount,
+      messagesFromDownScroll: finalMessageCount - messagesAfterUpScroll
     };
   };
   
