@@ -433,47 +433,98 @@ async (page) => {
     let previousMessageCount = 0;
     let currentMessageCount = 0;
     let scrollAttempts = 0;
-    const maxScrollAttempts = 15;
-    const scrollDelay = 800;
+    let consecutiveNoChangeAttempts = 0;
+    const maxScrollAttempts = 25;
+    const maxConsecutiveNoChange = 5;
+    const scrollDelay = 1200;
 
     do {
       previousMessageCount = currentMessageCount;
+      
+      // Enhanced message counting with multiple selectors
       currentMessageCount = await root.evaluate((rootEl) => {
-        const groups = rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group');
-        return groups.length;
+        const selectors = [
+          '.msg-s-event-listitem',
+          '.msg-s-message-group',
+          '.msg-s-message-group__message',
+          '[data-view-name*="message"]',
+          '.conversation-message-item',
+          '.msg-conversation-listitem'
+        ];
+        
+        let totalCount = 0;
+        const seen = new Set();
+        
+        for (const selector of selectors) {
+          const elements = rootEl.querySelectorAll(selector);
+          for (const el of elements) {
+            // Use element's position and content to avoid double counting
+            const key = el.getBoundingClientRect().top + '_' + (el.textContent || '').slice(0, 50);
+            if (!seen.has(key) && el.textContent && el.textContent.trim()) {
+              seen.add(key);
+              totalCount++;
+            }
+          }
+        }
+        
+        return totalCount;
       });
 
-      await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages found\`);
+      if (currentMessageCount > previousMessageCount) {
+        consecutiveNoChangeAttempts = 0;
+        await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages found (+\${currentMessageCount - previousMessageCount})\`);
+      } else {
+        consecutiveNoChangeAttempts++;
+        await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages found (no change x\${consecutiveNoChangeAttempts})\`);
+      }
 
+      // Enhanced scrolling with multiple strategies
       try {
+        // Strategy 1: Scroll to absolute top with instant behavior
         await scrollContainer.evaluate((el) => {
-          el.scrollTo({ top: 0, behavior: 'smooth' });
+          el.scrollTo({ top: 0, behavior: 'instant' });
         });
-        await sleep(scrollDelay);
+        await sleep(300);
 
+        // Strategy 2: Use keyboard navigation
         await scrollContainer.press('Home').catch(() => {});
         await sleep(200);
 
-        for (let i = 0; i < 3; i++) {
+        // Strategy 3: Multiple page up presses with longer delays
+        for (let i = 0; i < 5; i++) {
           await scrollContainer.press('PageUp').catch(() => {});
-          await sleep(100);
+          await sleep(150);
         }
+
+        // Strategy 4: Ctrl+Home for absolute top
+        await scrollContainer.press('Control+Home').catch(() => {});
+        await sleep(200);
+
+        // Strategy 5: Additional manual scroll to ensure we're at top
+        await scrollContainer.evaluate((el) => {
+          el.scrollTop = 0;
+        });
+        
       } catch (e) {
         await debug(\`Scrolling error: \${e && e.message ? e.message : String(e)}\`);
       }
 
       scrollAttempts++;
+      
+      // Wait longer for content to load
       await sleep(scrollDelay);
+      
     } while (
-      scrollAttempts < maxScrollAttempts &&
-      (currentMessageCount > previousMessageCount || scrollAttempts < 3)
+      scrollAttempts < maxScrollAttempts && 
+      consecutiveNoChangeAttempts < maxConsecutiveNoChange
     );
 
     await debug(
-      \`Scrolling completed. Final message count: \${currentMessageCount}, scroll attempts: \${scrollAttempts}\`
+      \`Scrolling completed. Final message count: \${currentMessageCount}, scroll attempts: \${scrollAttempts}, consecutive no-change: \${consecutiveNoChangeAttempts}\`
     );
 
-    await sleep(1000);
+    // Final wait to ensure all content is loaded
+    await sleep(1500);
   };
 
   await scrollToLoadMessages();
