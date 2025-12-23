@@ -136,12 +136,12 @@ async (page) => {
   }
 
   // ✅ UPDATED: buildReadChatCode con ensureOnUrl (skip si ya está en la URL)
-  private buildReadChatCode(
-    profileUrl: string,
-    limit: number,
-    threadHint?: string,
-  ) {
-    return `
+private buildReadChatCode(
+  profileUrl: string,
+  limit: number,
+  threadHint?: string,
+) {
+  return `
 async (page) => {
   ${buildEnsureOnUrlSnippet()}
   const profileUrl = ${JSON.stringify(profileUrl)};
@@ -151,11 +151,11 @@ async (page) => {
   const debug = (msg) => console.log('[read-chat]', msg, 'url=', page.url());
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // ✅ NEW: utilidades locales (re-usan helpers del snippet)
+  // ✅ utilidades locales (re-usan helpers del snippet)
   const normalizeProfileUrl = (u) => __normalizeUrl(u);
   const sameProfile = (a, b) => __sameUrl(a, b, false);
 
-  // ✅ NEW: detectar si ya hay una conversación abierta (overlay/inline)
+  // ✅ detectar si ya hay una conversación abierta (overlay/inline)
   const getOpenThreadProfileHref = async () => {
     const candidates = [
       '.msg-overlay-bubble-header__title a[href*="/in/"]',
@@ -225,8 +225,7 @@ async (page) => {
   let root = await detectConversationRootNow();
   let usedFastPath = false;
 
-  // ✅ FAST PATH:
-  // Si ya hay conversación abierta y coincide con el perfil objetivo (o con el threadHint), no navegamos ni clickeamos CTA.
+  // ✅ FAST PATH: si ya hay conversación abierta y coincide con perfil o threadHint
   if (root) {
     const openHref = await getOpenThreadProfileHref();
     const same = openHref ? sameProfile(openHref, profileUrl) : false;
@@ -373,7 +372,6 @@ async (page) => {
       page.locator('main').last(),
     ];
 
-    // Try each container candidate
     for (const candidate of containerCandidates) {
       try {
         await candidate.waitFor({ state: 'visible', timeout: 2000 });
@@ -381,12 +379,9 @@ async (page) => {
         const containerType = await candidate.evaluate((el) => el.className || el.tagName);
         await debug(\`Container detected: \${containerType}\`);
         break;
-      } catch {
-        // Continue to next candidate
-      }
+      } catch {}
     }
 
-    // ✅ FALLBACK: If no specific container found, use the page body but with more targeted selectors
     if (!root) {
       await debug('No specific conversation container found, using fallback to body');
       root = page.locator('body');
@@ -396,7 +391,6 @@ async (page) => {
   // ✅ Wait for chat content to fully load before extraction
   await debug('Waiting for message content to load...');
 
-  // Wait for specific message indicators
   try {
     await root.locator('.msg-s-event-listitem, .msg-s-message-group').first().waitFor({ timeout: 3000, state: 'visible' });
     await debug('Message containers detected, proceeding with extraction');
@@ -404,7 +398,6 @@ async (page) => {
     await debug('No structured message containers found after 3s, proceeding with fallback');
   }
 
-  // Additional wait for dynamic content
   await sleep(800);
 
   // -----------------------------
@@ -423,7 +416,6 @@ async (page) => {
 
     let scrollContainer = null;
 
-    // Find the scrollable container
     for (const selector of scrollContainers) {
       const container = root.locator(selector).first();
       if ((await container.count()) && (await container.isVisible().catch(() => false))) {
@@ -438,7 +430,6 @@ async (page) => {
       scrollContainer = root;
     }
 
-    // Count initial messages to track progress
     let previousMessageCount = 0;
     let currentMessageCount = 0;
     let scrollAttempts = 0;
@@ -446,7 +437,6 @@ async (page) => {
     const scrollDelay = 800;
 
     do {
-      // Count current messages
       previousMessageCount = currentMessageCount;
       currentMessageCount = await root.evaluate((rootEl) => {
         const groups = rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group');
@@ -455,18 +445,15 @@ async (page) => {
 
       await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages found\`);
 
-      // Scroll to top to load older messages
       try {
         await scrollContainer.evaluate((el) => {
           el.scrollTo({ top: 0, behavior: 'smooth' });
         });
         await sleep(scrollDelay);
 
-        // Also try scrolling up with keyboard
         await scrollContainer.press('Home').catch(() => {});
         await sleep(200);
 
-        // Additional scroll up attempts
         for (let i = 0; i < 3; i++) {
           await scrollContainer.press('PageUp').catch(() => {});
           await sleep(100);
@@ -486,21 +473,27 @@ async (page) => {
       \`Scrolling completed. Final message count: \${currentMessageCount}, scroll attempts: \${scrollAttempts}\`
     );
 
-    // Final wait for content to settle
     await sleep(1000);
   };
 
   await scrollToLoadMessages();
 
   // -----------------------------
-  // 6) Multiple extraction strategies - run ALL and return the best one
+  // 6) Extraction (con fix de datetime usando time-heading)
   // -----------------------------
   const payload = await root.evaluate(
     (rootEl, ctx) => {
       const targetProfileUrl = (ctx?.profileUrl ?? '').toString();
       const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
 
-      // ✅ NEW: helpers for datetime + role (do not change existing behavior)
+      const stripAccents = (s) => {
+        try {
+          return (s || '').toString().normalize('NFD').replace(/[\\u0300-\\u036f]/g, '');
+        } catch {
+          return (s || '').toString();
+        }
+      };
+
       const normalizeUrl = (u) => {
         const s = norm(u);
         if (!s) return '';
@@ -532,7 +525,6 @@ async (page) => {
           const a = document.querySelector(sel);
           const href = a && (a.getAttribute('href') || a.href);
           if (href && href.includes('/in/')) {
-            // normalize relative hrefs
             try {
               const abs = new URL(href, document.baseURI).toString();
               return abs;
@@ -542,7 +534,6 @@ async (page) => {
           }
         }
 
-        // last-resort: any profile link in the overlay header region
         const broad = document.querySelector(
           '.msg-overlay-container a[href*="/in/"], .msg-overlay-conversation-bubble a[href*="/in/"]'
         );
@@ -561,48 +552,224 @@ async (page) => {
 
       const targetProfileUrlNorm = normalizeUrl(targetProfileUrl || inferThreadProfileUrl() || '');
 
-      const pickDatetimeAttr = (node, selectors) => {
+      const pickFirst = (node, selectors) => {
         if (!node) return null;
         for (const sel of selectors) {
           const el = node.querySelector(sel);
           if (!el) continue;
-
           const raw =
-            norm(el.getAttribute?.('datetime')) ||
-            norm(el.getAttribute?.('data-time')) ||
-            norm(el.getAttribute?.('data-timestamp')) ||
-            norm(el.getAttribute?.('data-epoch')) ||
-            norm(el.getAttribute?.('data-event-time')) ||
-            // ✅ IMPORTANT: LinkedIn muchas veces lo pone acá
             norm(el.getAttribute?.('aria-label')) ||
+            norm(el.getAttribute?.('datetime')) ||
             norm(el.getAttribute?.('title')) ||
-            norm(el.getAttribute?.('data-tooltip')) ||
             norm(el.textContent);
-
           if (raw) return raw;
         }
         return null;
       };
 
-      const normalizeDatetime = (raw) => {
+      const extractClock = (raw) => {
         const s = norm(raw);
-        if (!s) return null;
+        if (!s) return { timeRaw: null, time: null };
 
-        // epoch seconds/millis
-        if (/^\\d{10}$/.test(s)) return new Date(parseInt(s, 10) * 1000).toISOString();
-        if (/^\\d{13}$/.test(s)) return new Date(parseInt(s, 10)).toISOString();
+        // 12h: 1:23 PM
+        const m12 = s.match(/\\b(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\b/i);
+        if (m12) {
+          let hh = parseInt(m12[1], 10);
+          const mm = m12[2];
+          const ap = m12[3].toUpperCase();
+          if (ap === 'PM' && hh < 12) hh += 12;
+          if (ap === 'AM' && hh === 12) hh = 0;
+          const hh2 = String(hh).padStart(2, '0');
+          return { timeRaw: s, time: \`\${hh2}:\${mm}\` };
+        }
 
-        const d = new Date(s);
-        if (!isNaN(d.getTime())) return d.toISOString();
+        // 24h: 13:21
+        const m24 = s.match(/\\b(\\d{1,2}):(\\d{2})\\b/);
+        if (m24) {
+          const hh = String(parseInt(m24[1], 10)).padStart(2, '0');
+          const mm = m24[2];
+          return { timeRaw: s, time: \`\${hh}:\${mm}\` };
+        }
 
-        return s;
+        return { timeRaw: s, time: null };
       };
 
+      // ✅ FIX DATETIME: usar el "time heading" más cercano (ej: "9 dic", "jueves")
+      const getDayHeadingTextForNode = (node) => {
+        try {
+          const el = node && node.nodeType === 1 ? node : node?.parentElement;
+          if (!el) return '';
+
+          const container =
+            el.closest?.('.msg-s-message-list') ||
+            rootEl.querySelector?.('.msg-s-message-list') ||
+            document.querySelector?.('.msg-s-message-list') ||
+            rootEl;
+
+          if (!container) return '';
+
+          const headings = Array.from(
+            container.querySelectorAll('time.msg-s-message-list__time-heading, time.msg-s-message-list__time-heading *')
+          )
+            .map((x) => (x.tagName === 'TIME' ? x : x.closest('time')))
+            .filter(Boolean);
+
+          let best = null;
+
+          for (const h of headings) {
+            if (!h || !h.compareDocumentPosition) continue;
+            const pos = h.compareDocumentPosition(el);
+            // si el message está DESPUÉS del heading => DOCUMENT_POSITION_FOLLOWING
+            if (pos & Node.DOCUMENT_POSITION_FOLLOWING) best = h;
+          }
+
+          const txt = best ? norm(best.textContent) : '';
+          return txt;
+        } catch {
+          return '';
+        }
+      };
+
+      const parseDayHeadingToYMD = (raw, now = new Date()) => {
+        const s0 = norm(raw);
+        if (!s0) return { ymd: null, dateObj: null, raw: null };
+
+        const s = stripAccents(s0).toLowerCase().replace(/[\\.,]/g, ' ');
+        const clean = s.replace(/\\s+/g, ' ').trim();
+
+        const months = {
+          // ES
+          ene: 0, enero: 0,
+          feb: 1, febrero: 1,
+          mar: 2, marzo: 2,
+          abr: 3, abril: 3,
+          may: 4, mayo: 4,
+          jun: 5, junio: 5,
+          jul: 6, julio: 6,
+          ago: 7, agosto: 7,
+          sep: 8, sept: 8, septiembre: 8,
+          oct: 9, octubre: 9,
+          nov: 10, noviembre: 10,
+          dic: 11, diciembre: 11,
+          // EN
+          jan: 0, january: 0,
+          february: 1,
+          march: 2,
+          apr: 3, april: 3,
+          jun: 5, june: 5,
+          jul: 6, july: 6,
+          aug: 7, august: 7,
+          sept: 8, september: 8,
+          oct: 9, october: 9,
+          nov: 10, november: 10,
+          dec: 11, december: 11,
+        };
+
+        const weekdays = {
+          domingo: 0, sunday: 0,
+          lunes: 1, monday: 1,
+          martes: 2, tuesday: 2,
+          miercoles: 3, wednesday: 3,
+          jueves: 4, thursday: 4,
+          viernes: 5, friday: 5,
+          sabado: 6, saturday: 6,
+        };
+
+        // Relativos
+        if (clean === 'hoy' || clean === 'today') {
+          const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          const ymd = \`\${d.getFullYear()}-\${String(d.getMonth() + 1).padStart(2, '0')}-\${String(d.getDate()).padStart(2, '0')}\`;
+          return { ymd, dateObj: d, raw: s0 };
+        }
+        if (clean === 'ayer' || clean === 'yesterday') {
+          const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          d.setDate(d.getDate() - 1);
+          const ymd = \`\${d.getFullYear()}-\${String(d.getMonth() + 1).padStart(2, '0')}-\${String(d.getDate()).padStart(2, '0')}\`;
+          return { ymd, dateObj: d, raw: s0 };
+        }
+
+        // Weekday (ej: "jueves")
+        if (weekdays.hasOwnProperty(clean)) {
+          const target = weekdays[clean];
+          const cur = now.getDay();
+          const diff = (cur - target + 7) % 7;
+          const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+          d.setDate(d.getDate() - diff);
+          const ymd = \`\${d.getFullYear()}-\${String(d.getMonth() + 1).padStart(2, '0')}-\${String(d.getDate()).padStart(2, '0')}\`;
+          return { ymd, dateObj: d, raw: s0 };
+        }
+
+        // Día + mes (ej: "9 dic", "9 de dic", "Dec 9")
+        let m =
+          clean.match(/\\b(\\d{1,2})\\s*(?:de\\s*)?([a-z]{3,9})(?:\\s*(\\d{4}))?\\b/i) ||
+          clean.match(/\\b([a-z]{3,9})\\s*(\\d{1,2})(?:\\s*(\\d{4}))?\\b/i);
+
+        if (m) {
+          let day = null;
+          let monStr = null;
+          let year = null;
+
+          if (/^\\d/.test(m[1])) {
+            // (day)(month)(year?)
+            day = parseInt(m[1], 10);
+            monStr = (m[2] || '').toLowerCase();
+            year = m[3] ? parseInt(m[3], 10) : null;
+          } else {
+            // (month)(day)(year?)
+            monStr = (m[1] || '').toLowerCase();
+            day = parseInt(m[2], 10);
+            year = m[3] ? parseInt(m[3], 10) : null;
+          }
+
+          // Normalizar month key (corta a 3 si hace falta)
+          let monKey = monStr;
+          if (!months.hasOwnProperty(monKey) && monKey.length > 3) monKey = monKey.slice(0, 3);
+
+          if (months.hasOwnProperty(monKey) && day && day >= 1 && day <= 31) {
+            let yy = year || now.getFullYear();
+            let d = new Date(yy, months[monKey], day);
+
+            // Heurística de año: si queda en el futuro "demasiado", probablemente fue año anterior (ej: hoy es enero y dice "dic")
+            const futureGuard = new Date(now.getTime());
+            futureGuard.setDate(futureGuard.getDate() + 2);
+
+            if (!year && d.getTime() > futureGuard.getTime()) {
+              yy = yy - 1;
+              d = new Date(yy, months[monKey], day);
+            }
+
+            const ymd = \`\${d.getFullYear()}-\${String(d.getMonth() + 1).padStart(2, '0')}-\${String(d.getDate()).padStart(2, '0')}\`;
+            return { ymd, dateObj: d, raw: s0 };
+          }
+        }
+
+        return { ymd: null, dateObj: null, raw: s0 };
+      };
+
+      const combineYmdAndTimeToIso = (ymd, hhmm) => {
+        if (!ymd) return null;
+        const parts = (ymd || '').split('-').map((x) => parseInt(x, 10));
+        if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) return null;
+        const [Y, M, D] = parts;
+
+        let hh = 0;
+        let mm = 0;
+
+        if (hhmm && /^\\d{2}:\\d{2}$/.test(hhmm)) {
+          hh = parseInt(hhmm.slice(0, 2), 10);
+          mm = parseInt(hhmm.slice(3, 5), 10);
+        }
+
+        const dt = new Date(Y, M - 1, D, hh, mm, 0, 0);
+        if (isNaN(dt.getTime())) return null;
+        return dt.toISOString();
+      };
+
+      // ✅ (mantener) role detection helpers
       const inferRoleByLayout = (itemEl) => {
         try {
           if (!itemEl) return null;
 
-          // Elegimos un “bubble” razonable para medir
           const bubble =
             itemEl.querySelector(
               '.msg-s-event-listitem__message-bubble,' +
@@ -614,7 +781,6 @@ async (page) => {
           const r = bubble.getBoundingClientRect?.();
           if (!r || !r.width) return null;
 
-          // Contenedor “grande” del hilo
           const container =
             bubble.closest(
               '.msg-s-message-list-container,' +
@@ -627,18 +793,13 @@ async (page) => {
           const cr = container.getBoundingClientRect?.();
           if (!cr || !cr.width) return null;
 
-          // Umbrales adaptativos
           const pad = Math.min(80, Math.max(24, cr.width * 0.12));
           const distLeft = r.left - cr.left;
           const distRight = cr.right - r.right;
 
-          // Si está pegado a la derecha => outbound (vos)
           if (distRight < pad && distLeft > pad) return 'recruiter';
-
-          // Si está pegado a la izquierda => inbound (la otra persona)
           if (distLeft < pad && distRight > pad) return 'candidate';
 
-          // Fallback por centro geométrico
           const bubbleCenter = r.left + r.width / 2;
           const containerCenter = cr.left + cr.width / 2;
           const deadZone = cr.width * 0.05;
@@ -701,7 +862,6 @@ async (page) => {
         try {
           if (!node) return null;
 
-          // subimos al "item" real
           const item =
             node.closest?.('.msg-s-event-listitem') || node.querySelector?.('.msg-s-event-listitem') || null;
 
@@ -709,18 +869,13 @@ async (page) => {
 
           const cls = (item.className || '').toString().toLowerCase();
 
-          // system events
           if (cls.includes('msg-s-event-listitem--system')) return null;
-
-          // "other" = la otra persona
           if (cls.includes('msg-s-event-listitem--other')) return 'candidate';
 
-          // también suele existir en el meta
           const meta = item.parentElement?.querySelector?.('.msg-s-message-group__meta');
           const metaCls = (meta?.className || '').toString().toLowerCase();
           if (metaCls.includes('msg-s-message-group__meta--other')) return 'candidate';
 
-          // si es un event-listitem normal y NO es other, casi siempre sos vos
           if (cls.includes('msg-s-event-listitem')) return 'recruiter';
 
           return null;
@@ -730,72 +885,27 @@ async (page) => {
       };
 
       const detectRole = (itemEl, groupEl, senderName, senderUrl) => {
-        // ✅ NUEVO: primero clases de LinkedIn
         const byClass = inferRoleByLinkedInClasses(itemEl) || inferRoleByLinkedInClasses(groupEl);
         if (byClass) return byClass;
 
-        // 1) DOM “self hints”
         if (hasSelfHints(itemEl) || hasSelfHints(groupEl)) return 'recruiter';
 
-        // 2) Layout/alineación
         const byLayout = inferRoleByLayout(itemEl);
         if (byLayout) return byLayout;
 
-        // 3) Labels típicos
         const name = norm(senderName).toLowerCase();
         if (name === 'you' || name === 'tú' || name === 'tu' || name === 'vos' || name === 'yo') {
           return 'recruiter';
         }
 
-        // 4) URL-based inbound (yo lo dejaría MUY abajo o lo quitaría)
         const sUrl = normalizeUrl(senderUrl || '');
         if (sUrl && targetProfileUrlNorm && sUrl === targetProfileUrlNorm) return 'candidate';
 
-        // 5) fallback final
         if (senderName) return 'candidate';
         return null;
       };
 
-      const pickFirst = (node, selectors) => {
-        if (!node) return null;
-        for (const sel of selectors) {
-          const el = node.querySelector(sel);
-          if (!el) continue;
-          const raw =
-            norm(el.getAttribute?.('aria-label')) || norm(el.getAttribute?.('datetime')) || norm(el.textContent);
-          if (raw) return raw;
-        }
-        return null;
-      };
-
-      const extractClock = (raw) => {
-        const s = norm(raw);
-        if (!s) return { timeRaw: null, time: null };
-
-        // 12h: 1:23 PM
-        const m12 = s.match(/\\b(\\d{1,2}):(\\d{2})\\s*(AM|PM)\\b/i);
-        if (m12) {
-          let hh = parseInt(m12[1], 10);
-          const mm = m12[2];
-          const ap = m12[3].toUpperCase();
-          if (ap === 'PM' && hh < 12) hh += 12;
-          if (ap === 'AM' && hh === 12) hh = 0;
-          const hh2 = String(hh).padStart(2, '0');
-          return { timeRaw: s, time: \`\${hh2}:\${mm}\` };
-        }
-
-        // 24h: 13:21
-        const m24 = s.match(/\\b(\\d{1,2}):(\\d{2})\\b/);
-        if (m24) {
-          const hh = String(parseInt(m24[1], 10)).padStart(2, '0');
-          const mm = m24[2];
-          return { timeRaw: s, time: \`\${hh}:\${mm}\` };
-        }
-
-        return { timeRaw: s, time: null };
-      };
-
-      // ✅ NEW: best-effort conversation URN discovery (for GraphQL fallback)
+      // URN discovery (igual que antes)
       const extractConversationUrn = (raw) => {
         const s = norm(raw);
         if (!s) return '';
@@ -803,7 +913,6 @@ async (page) => {
         if (m1 && m1[0]) return m1[0];
         const m2 = s.match(/urn:li:msg_conversation:[^\\s\\)\\,"]+/i);
         if (m2 && m2[0]) return m2[0];
-        // message URN often contains conversation URN inside
         const m3 = s.match(/urn:li:msg_message:\\((urn:li:msg_conversation:[^\\)]+)\\,/i);
         if (m3 && m3[1]) return m3[1];
         const m4 = s.match(/urn:li:msg_message:\\((urn:li:msg_conversation:\\([^\\)]+\\))\\,/i);
@@ -812,11 +921,9 @@ async (page) => {
       };
 
       const findConversationUrnInDom = () => {
-        // 1) Look at URL
         const fromUrl = extractConversationUrn(location.href);
         if (fromUrl) return fromUrl;
 
-        // 2) Look at known urn-ish attributes on containers/items
         const urnEls = Array.from(
           rootEl.querySelectorAll(
             '[data-event-urn],[data-entity-urn],[data-urn],[data-conversation-urn],[data-conversation-id]'
@@ -838,7 +945,6 @@ async (page) => {
           }
         }
 
-        // 3) Last resort: scan a limited number of elements for URN-like strings
         const sample = Array.from(rootEl.querySelectorAll('*')).slice(0, 600);
         for (const el of sample) {
           const v =
@@ -855,9 +961,7 @@ async (page) => {
       const conversationUrn = findConversationUrnInDom();
       const threadProfileUrlDetected = inferThreadProfileUrl();
 
-      // ✅ ENHANCED: Improved sender name extraction with more fallbacks
       const getSenderName = (group) => {
-        // Strategy 1: Standard LinkedIn selectors
         let name =
           norm(group.querySelector('.msg-s-message-group__name')?.textContent) ||
           norm(group.querySelector('.msg-s-message-group__profile-link')?.textContent) ||
@@ -867,7 +971,6 @@ async (page) => {
 
         if (name) return name;
 
-        // Strategy 2: Enhanced meta container extraction
         const metaContainer = group.querySelector('.msg-s-message-group__meta');
         if (metaContainer) {
           name =
@@ -877,7 +980,6 @@ async (page) => {
           if (name) return name;
         }
 
-        // Strategy 3: Image attributes (enhanced)
         const imgs = group.querySelectorAll(
           'img.msg-s-event-listitem__profile-picture, img[alt], img[title], img[data-ghost-person]'
         );
@@ -886,12 +988,10 @@ async (page) => {
           if (name && !name.match(/^(profile|foto|picture|image)$/i)) return name;
         }
 
-        // Strategy 4: Enhanced accessibility text parsing
         const a11yTexts = group.querySelectorAll('.a11y-text, .visually-hidden, [aria-label]');
         for (const a11y of a11yTexts) {
           const text = a11y.textContent || a11y.getAttribute('aria-label');
           if (text) {
-            // Parse patterns like "View Santiago's profile", "Santiago sent a message"
             const patterns = [
               /View\\s+(.+?)'?s?\\s+profile/i,
               /(.+?)\\s+sent\\s+a\\s+message/i,
@@ -909,21 +1009,17 @@ async (page) => {
           }
         }
 
-        // Strategy 5: Profile link structure (enhanced)
         const profileLinks = group.querySelectorAll('a[href*="/in/"], a[href*="linkedin.com"]');
         for (const link of profileLinks) {
-          // Try text content of the link
           name = norm(link.textContent);
           if (name && name.length > 1 && !name.match(/^(profile|perfil|view|ver)$/i)) return name;
 
-          // Try nested elements
           const nested = link.querySelector('.msg-s-message-group__name, [data-anonymize="person-name"], strong, span');
           if (nested) {
             name = norm(nested.textContent);
             if (name) return name;
           }
 
-          // Try associated images
           const linkImg = link.querySelector('img[alt], img[title]');
           if (linkImg) {
             name = norm(linkImg.getAttribute('title')) || norm(linkImg.getAttribute('alt'));
@@ -931,7 +1027,6 @@ async (page) => {
           }
         }
 
-        // Strategy 6: Header and title elements
         const headers = group.querySelectorAll('h1, h2, h3, h4, h5, h6, .heading, [role="heading"]');
         for (const header of headers) {
           name = norm(header.textContent);
@@ -941,15 +1036,13 @@ async (page) => {
         return null;
       };
 
-      // ✅ ENHANCED: Improved sender URL extraction
       const getSenderUrl = (group) => {
-        // Strategy 1: Enhanced LinkedIn profile link selectors
         const candidates = [
           'a.msg-s-event-listitem__link[href*="/in/"]',
           'a.msg-s-message-group__profile-link[href*="/in/"]',
           '.msg-s-message-group__meta a[href*="/in/"]',
           'a[data-test-app-aware-link][href*="/in/"]',
-          'a[href*="/in/ACoAA"]', // Specific LinkedIn ID pattern
+          'a[href*="/in/ACoAA"]',
           'a[href*="linkedin.com/in/"]',
         ];
 
@@ -958,21 +1051,16 @@ async (page) => {
           if (link) {
             const href = link.getAttribute('href');
             if (href && href.includes('/in/')) {
-              // Clean up relative URLs
-              if (href.startsWith('/')) {
-                return 'https://www.linkedin.com' + href;
-              }
+              if (href.startsWith('/')) return 'https://www.linkedin.com' + href;
               return href;
             }
           }
         }
 
-        // Strategy 2: Any profile link patterns (enhanced)
         const allLinks = Array.from(group.querySelectorAll('a[href]'));
         for (const link of allLinks) {
           const href = link.getAttribute('href');
           if (href) {
-            // Match various LinkedIn profile URL patterns
             const patterns = [
               /linkedin\\.com\\/in\\//i,
               /\\/in\\/ACoAA/,
@@ -982,21 +1070,17 @@ async (page) => {
 
             for (const pattern of patterns) {
               if (pattern.test(href)) {
-                if (href.startsWith('/')) {
-                  return 'https://www.linkedin.com' + href;
-                }
+                if (href.startsWith('/')) return 'https://www.linkedin.com' + href;
                 return href;
               }
             }
           }
         }
 
-        // Strategy 3: Data attributes that might contain profile info
         const dataAttrs = ['data-member-id', 'data-profile-id', 'data-person-urn'];
         for (const attr of dataAttrs) {
           const value = group.getAttribute(attr) || group.querySelector(\`[\${attr}]\`)?.getAttribute(attr);
           if (value) {
-            // Convert to LinkedIn URL if it looks like an ID
             if (value.match(/^\\d+$/) || value.includes('ACoAA')) {
               return \`https://www.linkedin.com/in/\${value}\`;
             }
@@ -1045,41 +1129,29 @@ async (page) => {
         return text || null;
       };
 
-      // ✅ ENHANCED: Helper to find parent meta container for message items
       const findParentMeta = (messageElement) => {
-        // Walk up the DOM to find the closest meta container
         let current = messageElement;
         let attempts = 0;
-        const maxAttempts = 10; // Prevent infinite loops
+        const maxAttempts = 10;
 
         while (current && current !== rootEl && attempts < maxAttempts) {
           attempts++;
 
-          // Check if current element or its siblings have meta info
           const parent = current.parentElement;
           if (!parent) break;
 
-          // Look for meta container in the parent's children (siblings)
           const metaInSiblings = parent.querySelector('.msg-s-message-group__meta');
-          if (metaInSiblings) {
-            return metaInSiblings;
-          }
+          if (metaInSiblings) return metaInSiblings;
 
-          // Look for meta container in the parent itself
           const metaInParent = parent.querySelector('.msg-s-message-group__meta');
-          if (metaInParent) {
-            return metaInParent;
-          }
+          if (metaInParent) return metaInParent;
 
-          // Check previous siblings for meta containers
           let sibling = current.previousElementSibling;
           while (sibling) {
             const metaInSibling = sibling.querySelector('.msg-s-message-group__meta');
             if (metaInSibling) return metaInSibling;
 
-            if (sibling.classList.contains('msg-s-message-group__meta')) {
-              return sibling;
-            }
+            if (sibling.classList.contains('msg-s-message-group__meta')) return sibling;
 
             sibling = sibling.previousElementSibling;
           }
@@ -1090,7 +1162,6 @@ async (page) => {
         return null;
       };
 
-      // ✅ STRATEGY EXTRACTION FUNCTION: Extract messages using a specific group selection strategy
       const extractWithStrategy = (strategyName, groupSelector, scopeEl = rootEl) => {
         const groups = Array.from(scopeEl.querySelectorAll(groupSelector));
         const messages = [];
@@ -1100,21 +1171,17 @@ async (page) => {
           let senderProfileUrl = getSenderUrl(g);
           let groupTime = getGroupTime(g);
 
-          // ✅ ENHANCED: If this is a message item without sender info, find the parent meta
           if (g.classList.contains('msg-s-event-listitem') && !senderName && !senderProfileUrl) {
             const parentMeta = findParentMeta(g);
             if (parentMeta) {
               senderName = getSenderName(parentMeta);
               senderProfileUrl = getSenderUrl(parentMeta);
-              if (!groupTime.time) {
-                groupTime = getGroupTime(parentMeta);
-              }
+              if (!groupTime.time) groupTime = getGroupTime(parentMeta);
             }
           }
 
           let items = [];
 
-          // Handle different LinkedIn message structures
           if (g.classList.contains('msg-s-event-listitem')) {
             items = [g];
           } else {
@@ -1122,11 +1189,9 @@ async (page) => {
               g.querySelectorAll('li.msg-s-message-group__message, li.msg-s-event-listitem, .msg-s-event-listitem')
             );
 
-            // ✅ ENHANCED: For meta containers, look for related message items in siblings/descendants
             if (g.classList.contains('msg-s-message-group__meta')) {
               const parent = g.parentElement;
               if (parent) {
-                // Look for message items that come after this meta container
                 let nextSibling = g.nextElementSibling;
                 const relatedItems = [];
 
@@ -1138,26 +1203,19 @@ async (page) => {
                     relatedItems.push(nextSibling);
                   }
 
-                  // Also check within the sibling for nested items
                   const nestedItems = nextSibling.querySelectorAll('.msg-s-event-listitem');
                   relatedItems.push(...Array.from(nestedItems));
 
                   nextSibling = nextSibling.nextElementSibling;
 
-                  // Stop if we hit another meta container (different sender)
-                  if (nextSibling && nextSibling.querySelector('.msg-s-message-group__meta')) {
-                    break;
-                  }
+                  if (nextSibling && nextSibling.querySelector('.msg-s-message-group__meta')) break;
                 }
 
-                if (relatedItems.length > 0) {
-                  items.push(...relatedItems);
-                }
+                if (relatedItems.length > 0) items.push(...relatedItems);
               }
             }
           }
 
-          // Fallback item extraction
           if (items.length === 0) {
             items = Array.from(
               g.querySelectorAll('.message-item, [data-test-id*="message"], .conversation-message-item')
@@ -1181,13 +1239,13 @@ async (page) => {
             if (!text) continue;
 
             const t = getItemTime(it, groupTime);
+
             const messageId =
               it.getAttribute?.('data-event-urn') ||
               it.getAttribute?.('data-message-id') ||
               it.id ||
               \`\${strategyName}-msg-\${messages.length}\`;
 
-            // ✅ ENHANCED: For individual message items, try to get sender info from parent meta if not available
             let finalSenderName = senderName;
             let finalSenderUrl = senderProfileUrl;
 
@@ -1199,12 +1257,18 @@ async (page) => {
               }
             }
 
-            // ✅ NEW: datetime + role keys (keep existing keys intact)
-            const datetimeAttr =
-              pickDatetimeAttr(it, ['time.msg-s-event-listitem__timestamp', 'time[datetime]', 'time', '[data-time]']) ||
-              pickDatetimeAttr(g, ['time.msg-s-message-group__timestamp', 'time[datetime]', 'time', '[data-time]']);
+            // ✅ NEW: datetime desde time-heading más cercano (ej: "9 dic", "jueves")
+            const dayHeadingRaw =
+              getDayHeadingTextForNode(it) ||
+              getDayHeadingTextForNode(g) ||
+              getDayHeadingTextForNode(findParentMeta(it)) ||
+              '';
 
-            const datetime = normalizeDatetime(datetimeAttr) || (t.timeRaw ? normalizeDatetime(t.timeRaw) : null);
+            const day = parseDayHeadingToYMD(dayHeadingRaw, new Date());
+            const datetimeFromHeading = day?.ymd ? combineYmdAndTimeToIso(day.ymd, t.time) : null;
+
+            // fallback: si no hay heading o no se pudo parsear, dejamos null (antes te quedaba null siempre)
+            const datetime = datetimeFromHeading;
 
             const role = detectRole(it, g, finalSenderName, finalSenderUrl);
 
@@ -1225,12 +1289,11 @@ async (page) => {
         return {
           strategyName,
           groupsFound: groups.length,
-          messages: messages,
+          messages,
           messagesFound: messages.length,
         };
       };
 
-      // ✅ RUN ALL EXTRACTION STRATEGIES INDEPENDENTLY
       const strategies = [
         { name: 'primary-selectors', selector: '.msg-s-event-listitem, .msg-s-message-group', scope: rootEl },
         { name: 'alternative-groups', selector: '.msg-s-event-listitem__group, [data-view-name*="message-group"]', scope: rootEl },
@@ -1260,7 +1323,7 @@ async (page) => {
         }
       }
 
-      // ✅ GENERIC TEXT FALLBACK STRATEGY
+      // Generic fallback (igual que antes)
       if (extractionResults.every((r) => r.messagesFound === 0)) {
         console.log('[extract-debug] All structured strategies failed, trying generic text extraction');
         const fallbackEls = Array.from(rootEl.querySelectorAll('p, span, div'))
@@ -1300,13 +1363,12 @@ async (page) => {
         });
       }
 
-      // ✅ FIND THE BEST STRATEGY (most messages with sender info, or just most messages)
+      // Pick best strategy
       let bestStrategy = extractionResults[0];
 
       for (const result of extractionResults) {
         if (result.messagesFound === 0) continue;
 
-        // Calculate quality score: messages count + sender info bonus
         const currentScore = result.messagesFound;
         const currentSenderScore = result.messages.filter((m) => m.senderName || m.senderProfileUrl).length;
         const currentQuality = currentScore + currentSenderScore * 0.5;
@@ -1316,12 +1378,10 @@ async (page) => {
           bestStrategy.messages?.filter((m) => m.senderName || m.senderProfileUrl).length || 0;
         const bestQuality = bestScore + bestSenderScore * 0.5;
 
-        if (currentQuality > bestQuality) {
-          bestStrategy = result;
-        }
+        if (currentQuality > bestQuality) bestStrategy = result;
       }
 
-      // Dedupe best strategy messages
+      // Dedupe
       const seen = new Set();
       const deduped = [];
       for (const m of bestStrategy.messages || []) {
@@ -1357,6 +1417,7 @@ async (page) => {
             groups: r.groupsFound,
             messages: r.messagesFound,
             withSender: r.messages?.filter((m) => m.senderName || m.senderProfileUrl).length || 0,
+            withDatetime: r.messages?.filter((m) => !!m.datetime).length || 0,
           })),
         },
       };
@@ -1364,7 +1425,7 @@ async (page) => {
     { profileUrl }
   );
 
-  // ✅ DEBUG: resumen de extracción (estrategias + urn + perfil detectado)
+  // ✅ DEBUG: resumen de extracción
   try {
     await debug(
       'Extraction summary -> ' +
@@ -1383,7 +1444,7 @@ async (page) => {
     );
   } catch {}
 
-  // ✅ DEBUG: sample de mensajes (los últimos 8) con datetime/role/text preview
+  // ✅ DEBUG: sample de mensajes (los últimos 8)
   try {
     const all = Array.isArray(payload?.messages) ? payload.messages : [];
     const sample = all.slice(Math.max(0, all.length - 8)).map((m) => ({
@@ -1403,28 +1464,26 @@ async (page) => {
   let msgs = Array.isArray(payload?.messages) ? payload.messages : [];
   if (msgs.length > limit) msgs = msgs.slice(-limit);
 
-  // ✅ FINAL FALLBACK: If we still have 0 messages, try additional strategies
+  // ✅ FINAL FALLBACK: si 0 mensajes, fallback de texto
   if (msgs.length === 0) {
     await debug('Zero messages extracted, applying final fallbacks');
 
-    // Strategy 1: Try finding any visible text in the conversation area
     const finalFallback = await root
       .evaluate((rootEl) => {
         const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
         const fallbackMessages = [];
 
-        // Look for any paragraphs or divs with substantial text content
         const textElements = Array.from(rootEl.querySelectorAll('p, div, span'))
           .filter((el) => {
             const text = norm(el.textContent);
             return (
               text.length > 10 &&
               text.length < 2000 &&
-              !el.querySelector('input, button, a') && // avoid UI elements
+              !el.querySelector('input, button, a') &&
               !/^(send|enviar|type|escribir)/i.test(text)
-            ); // avoid UI text
+            );
           })
-          .slice(0, 20); // limit to avoid noise
+          .slice(0, 20);
 
         for (let i = 0; i < textElements.length; i++) {
           const text = norm(textElements[i].textContent);
@@ -1435,7 +1494,7 @@ async (page) => {
               senderProfileUrl: null,
               time: null,
               timeRaw: null,
-              text: text,
+              text,
               isFallback: true,
               datetime: null,
               role: null,
@@ -1448,12 +1507,11 @@ async (page) => {
       .catch(() => []);
 
     if (finalFallback.length > 0) {
-      msgs = finalFallback.slice(0, Math.min(limit, 10)); // limit fallback messages
+      msgs = finalFallback.slice(0, Math.min(limit, 10));
       await debug(\`Emergency fallback applied: found \${msgs.length} text elements\`);
     }
   }
 
-  // ✅ ULTIMATE FALLBACK: If we absolutely have no messages, create a placeholder
   if (msgs.length === 0) {
     await debug('All fallback strategies failed, creating placeholder message');
     msgs = [
@@ -1477,7 +1535,6 @@ async (page) => {
   const conversationUrn = payload && payload.conversationUrn ? String(payload.conversationUrn) : '';
   const threadProfileUrlDetected = payload && payload.threadProfileUrlDetected ? String(payload.threadProfileUrlDetected) : '';
 
-  // ✅ NEW: dynamic URL builder (no hardcoded URN)
   const baseGraphql = "https://www.linkedin.com/voyager/api/voyagerMessagingGraphQL/graphql";
   const queryId = "messengerMessages.5846eeb71c981f11e0134cb6626cc314";
 
@@ -1503,13 +1560,10 @@ async (page) => {
       graphqlTestResult = await page.evaluate(
         async ({ testUrl, targetProfileUrl }) => {
           try {
-            // Get CSRF token from multiple LinkedIn-specific sources
             let csrf = null;
 
-            // Strategy 1: Check window object properties
             csrf = window.csrfToken || window._csrf || window.CSRF_TOKEN;
 
-            // Strategy 2: Check meta tags with various names
             if (!csrf) {
               const metaSelectors = [
                 'meta[name="csrf-token"]',
@@ -1529,14 +1583,11 @@ async (page) => {
               }
             }
 
-            // Strategy 3: Check for LinkedIn-specific CSRF in script tags or data attributes
             if (!csrf) {
-              // Look for CSRF in script tags containing LinkedIn config
               const scripts = document.querySelectorAll('script');
               for (const script of scripts) {
                 const text = script.textContent || script.innerHTML;
                 if (text && text.includes('csrf')) {
-                  // Try to extract CSRF from various patterns
                   const patterns = [
                     /"csrf[Tt]oken"\\s*:\\s*"([^"]+)"/,
                     /'csrf[Tt]oken'\\s*:\\s*'([^']+)'/,
@@ -1557,7 +1608,6 @@ async (page) => {
               }
             }
 
-            // Strategy 4: Check for CSRF in data attributes on html/body
             if (!csrf) {
               const dataAttrs = ['data-csrf-token', 'data-csrf', 'data-x-csrf-token'];
               for (const attr of dataAttrs) {
@@ -1566,7 +1616,6 @@ async (page) => {
               }
             }
 
-            // Strategy 5: Check for LinkedIn's client state or app config
             if (!csrf && window.lix && window.lix.clientState) {
               csrf = window.lix.clientState.csrfToken || window.lix.clientState.csrf;
             }
@@ -1575,10 +1624,7 @@ async (page) => {
               csrf = window.appConfig.csrfToken || window.appConfig.csrf;
             }
 
-            // Fallback
-            if (!csrf) {
-              csrf = 'no-csrf-found';
-            }
+            if (!csrf) csrf = 'no-csrf-found';
 
             const res = await fetch(testUrl, {
               method: "GET",
@@ -1599,7 +1645,6 @@ async (page) => {
               responseText = await res.text();
             }
 
-            // Debug info about CSRF detection
             const csrfDebugInfo = {
               windowCsrfToken: !!window.csrfToken,
               windowCsrf: !!window._csrf,
@@ -1611,7 +1656,6 @@ async (page) => {
               foundCsrf: csrf !== 'no-csrf-found',
             };
 
-            // ✅ NEW: best-effort parsing into message-like objects (may vary by queryId)
             const extracted = [];
             const seen = new Set();
             const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
@@ -1698,8 +1742,8 @@ async (page) => {
               status: res.status,
               statusText: res.statusText,
               headers: Object.fromEntries(res.headers.entries()),
-              responseText: responseText ? responseText.slice(0, 2000) : null, // Limit response size
-              csrf: csrf,
+              responseText: responseText ? responseText.slice(0, 2000) : null,
+              csrf,
               csrfDebug: csrfDebugInfo,
               url: testUrl,
               extractedMessages: extracted.slice(0, 200),
@@ -1732,7 +1776,7 @@ async (page) => {
     await debug(\`GraphQL API test error: \${e && e.message ? e.message : String(e)}\`);
   }
 
-  // ✅ NEW: If DOM extraction failed, use GraphQL parsed messages as a fallback
+  // ✅ DOM->GraphQL fallback
   if ((msgs.length === 0 || !!msgs[0]?.isPlaceholder) && Array.isArray(graphqlMessages) && graphqlMessages.length > 0) {
     await debug(\`Using GraphQL fallback messages: \${graphqlMessages.length}\`);
     msgs = graphqlMessages;
@@ -1790,14 +1834,13 @@ async (page) => {
     threadProfileUrlDetected: threadProfileUrlDetected || null,
   };
 
-  // Add GraphQL test result to the final result
   result.graphqlTest = graphqlTestResult;
 
-  // ✅ return object (not JSON.stringify)
   return result;
 }
 `;
-  }
+}
+
 
   // -----------------------------
   // ✅ UPDATED: readChat multi-sesión (safe parse + correct logs)
