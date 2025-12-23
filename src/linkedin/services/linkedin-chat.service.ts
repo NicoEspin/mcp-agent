@@ -299,7 +299,92 @@ async (page) => {
   }
 
   // -----------------------------
-  // 5) Extracción robusta (timestamps + scoping) con múltiples fallbacks
+  // 5) Scroll to load all messages before extraction
+  // -----------------------------
+  await debug('Starting message scrolling to load all content...');
+  
+  const scrollToLoadMessages = async () => {
+    const scrollContainers = [
+      '.msg-s-message-list',
+      '.msg-overlay-conversation-bubble__content-wrapper',
+      '.msg-conversation__body',
+      '.msg-thread',
+      '[data-view-name*="conversation"]',
+    ];
+    
+    let scrollContainer = null;
+    
+    // Find the scrollable container
+    for (const selector of scrollContainers) {
+      const container = root.locator(selector).first();
+      if (await container.count() && await container.isVisible().catch(() => false)) {
+        scrollContainer = container;
+        await debug(\`Found scrollable container: \${selector}\`);
+        break;
+      }
+    }
+    
+    if (!scrollContainer) {
+      await debug('No scrollable container found, using root for scrolling');
+      scrollContainer = root;
+    }
+    
+    // Count initial messages to track progress
+    let previousMessageCount = 0;
+    let currentMessageCount = 0;
+    let scrollAttempts = 0;
+    const maxScrollAttempts = 15;
+    const scrollDelay = 800;
+    
+    do {
+      // Count current messages
+      previousMessageCount = currentMessageCount;
+      currentMessageCount = await root.evaluate((rootEl) => {
+        const groups = rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group');
+        return groups.length;
+      });
+      
+      await debug(\`Scroll attempt \${scrollAttempts + 1}: \${currentMessageCount} messages found\`);
+      
+      // Scroll to top to load older messages
+      try {
+        await scrollContainer.evaluate((el) => {
+          el.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+        await sleep(scrollDelay);
+        
+        // Also try scrolling up with keyboard
+        await scrollContainer.press('Home').catch(() => {});
+        await sleep(200);
+        
+        // Additional scroll up attempts
+        for (let i = 0; i < 3; i++) {
+          await scrollContainer.press('PageUp').catch(() => {});
+          await sleep(100);
+        }
+        
+      } catch (e) {
+        await debug(\`Scrolling error: \${e.message}\`);
+      }
+      
+      scrollAttempts++;
+      await sleep(scrollDelay);
+      
+    } while (
+      scrollAttempts < maxScrollAttempts && 
+      (currentMessageCount > previousMessageCount || scrollAttempts < 3)
+    );
+    
+    await debug(\`Scrolling completed. Final message count: \${currentMessageCount}, scroll attempts: \${scrollAttempts}\`);
+    
+    // Final wait for content to settle
+    await sleep(1000);
+  };
+  
+  await scrollToLoadMessages();
+
+  // -----------------------------
+  // 6) Multiple extraction strategies - run ALL and return the best one
   // -----------------------------
   const payload = await root.evaluate((rootEl) => {
     const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
@@ -345,21 +430,151 @@ async (page) => {
       return { timeRaw: s, time: null };
     };
 
-    const getSenderName = (group) =>
-      norm(group.querySelector('.msg-s-message-group__name')?.textContent) ||
-      norm(group.querySelector('.msg-s-message-group__profile-link')?.textContent) ||
-      norm(group.querySelector('[data-anonymize="person-name"]')?.textContent) ||
-      norm(group.querySelector('a[data-test-app-aware-link] .msg-s-message-group__name')?.textContent) ||
-      norm(group.querySelector('a[data-test-app-aware-link]')?.textContent) ||
-      null;
+    // ✅ ENHANCED: Improved sender name extraction with more fallbacks
+    const getSenderName = (group) => {
+      // Strategy 1: Standard LinkedIn selectors
+      let name = norm(group.querySelector('.msg-s-message-group__name')?.textContent) ||
+                 norm(group.querySelector('.msg-s-message-group__profile-link')?.textContent) ||
+                 norm(group.querySelector('[data-anonymize="person-name"]')?.textContent) ||
+                 norm(group.querySelector('a[data-test-app-aware-link] .msg-s-message-group__name')?.textContent) ||
+                 norm(group.querySelector('a[data-test-app-aware-link]')?.textContent);
+      
+      if (name) return name;
+      
+      // Strategy 2: Enhanced meta container extraction
+      const metaContainer = group.querySelector('.msg-s-message-group__meta');
+      if (metaContainer) {
+        name = norm(metaContainer.querySelector('.msg-s-message-group__name')?.textContent) ||
+               norm(metaContainer.querySelector('a[href*="/in/"]')?.textContent) ||
+               norm(metaContainer.querySelector('[data-test-app-aware-link]')?.textContent);
+        if (name) return name;
+      }
+      
+      // Strategy 3: Image attributes (enhanced)
+      const imgs = group.querySelectorAll('img.msg-s-event-listitem__profile-picture, img[alt], img[title], img[data-ghost-person]');
+      for (const img of imgs) {
+        name = norm(img.getAttribute('title')) || norm(img.getAttribute('alt')) || norm(img.getAttribute('aria-label'));
+        if (name && !name.match(/^(profile|foto|picture|image)$/i)) return name;
+      }
+      
+      // Strategy 4: Enhanced accessibility text parsing
+      const a11yTexts = group.querySelectorAll('.a11y-text, .visually-hidden, [aria-label]');
+      for (const a11y of a11yTexts) {
+        const text = a11y.textContent || a11y.getAttribute('aria-label');
+        if (text) {
+          // Parse patterns like "View Santiago's profile", "Santiago sent a message"
+          const patterns = [
+            /View\\s+(.+?)'?s?\\s+profile/i,
+            /(.+?)\\s+sent\\s+a\\s+message/i,
+            /Message\\s+from\\s+(.+)/i,
+            /(.+?)\\s+dice:/i,
+            /(.+?)\\s+says:/i
+          ];
+          for (const pattern of patterns) {
+            const match = text.match(pattern);
+            if (match && match[1]) {
+              name = norm(match[1]);
+              if (name) return name;
+            }
+          }
+        }
+      }
+      
+      // Strategy 5: Profile link structure (enhanced)
+      const profileLinks = group.querySelectorAll('a[href*="/in/"], a[href*="linkedin.com"]');
+      for (const link of profileLinks) {
+        // Try text content of the link
+        name = norm(link.textContent);
+        if (name && name.length > 1 && !name.match(/^(profile|perfil|view|ver)$/i)) return name;
+        
+        // Try nested elements
+        const nested = link.querySelector('.msg-s-message-group__name, [data-anonymize="person-name"], strong, span');
+        if (nested) {
+          name = norm(nested.textContent);
+          if (name) return name;
+        }
+        
+        // Try associated images
+        const linkImg = link.querySelector('img[alt], img[title]');
+        if (linkImg) {
+          name = norm(linkImg.getAttribute('title')) || norm(linkImg.getAttribute('alt'));
+          if (name && !name.match(/^(profile|foto|picture|image)$/i)) return name;
+        }
+      }
+      
+      // Strategy 6: Header and title elements
+      const headers = group.querySelectorAll('h1, h2, h3, h4, h5, h6, .heading, [role="heading"]');
+      for (const header of headers) {
+        name = norm(header.textContent);
+        if (name && name.length > 1 && name.length < 50) return name;
+      }
+      
+      return null;
+    };
 
+    // ✅ ENHANCED: Improved sender URL extraction
     const getSenderUrl = (group) => {
-      const a =
-        group.querySelector('a.msg-s-message-group__profile-link') ||
-        group.querySelector('a[data-test-app-aware-link]') ||
-        group.querySelector('a.msg-s-event-listitem__link') ||
-        group.querySelector('a[href*="/in/"]');
-      return a?.getAttribute?.('href') || null;
+      // Strategy 1: Enhanced LinkedIn profile link selectors
+      const candidates = [
+        'a.msg-s-event-listitem__link[href*="/in/"]',
+        'a.msg-s-message-group__profile-link[href*="/in/"]', 
+        '.msg-s-message-group__meta a[href*="/in/"]',
+        'a[data-test-app-aware-link][href*="/in/"]',
+        'a[href*="/in/ACoAA"]', // Specific LinkedIn ID pattern
+        'a[href*="linkedin.com/in/"]',
+      ];
+      
+      for (const selector of candidates) {
+        const link = group.querySelector(selector);
+        if (link) {
+          const href = link.getAttribute('href');
+          if (href && href.includes('/in/')) {
+            // Clean up relative URLs
+            if (href.startsWith('/')) {
+              return 'https://www.linkedin.com' + href;
+            }
+            return href;
+          }
+        }
+      }
+      
+      // Strategy 2: Any profile link patterns (enhanced)
+      const allLinks = Array.from(group.querySelectorAll('a[href]'));
+      for (const link of allLinks) {
+        const href = link.getAttribute('href');
+        if (href) {
+          // Match various LinkedIn profile URL patterns
+          const patterns = [
+            /linkedin\\.com\\/in\\//i,
+            /\\/in\\/ACoAA/,
+            /\\/in\\/[a-zA-Z0-9\\-]+/,
+            /miniprofile\\/.*urn.*person/i
+          ];
+          
+          for (const pattern of patterns) {
+            if (pattern.test(href)) {
+              if (href.startsWith('/')) {
+                return 'https://www.linkedin.com' + href;
+              }
+              return href;
+            }
+          }
+        }
+      }
+      
+      // Strategy 3: Data attributes that might contain profile info
+      const dataAttrs = ['data-member-id', 'data-profile-id', 'data-person-urn'];
+      for (const attr of dataAttrs) {
+        const value = group.getAttribute(attr) || group.querySelector(\`[\${attr}]\`)?.getAttribute(attr);
+        if (value) {
+          // Convert to LinkedIn URL if it looks like an ID
+          if (value.match(/^\\d+$/) || value.includes('ACoAA')) {
+            return \`https://www.linkedin.com/in/\${value}\`;
+          }
+        }
+      }
+      
+      return null;
     };
 
     const getGroupTime = (group) => {
@@ -401,173 +616,180 @@ async (page) => {
       return text || null;
     };
 
-    // ✅ FALLBACK STRATEGY 1: Try primary selector
-    const messages = [];
-    const allGroups = [];
-    
-    // Strategy 1: Primary LinkedIn chat selectors (.msg-s-event-listitem is the main container)
-    const groups1 = Array.from(rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group'));
-    if (groups1.length > 0) {
-      allGroups.push(...groups1);
-    }
-
-    // ✅ FALLBACK STRATEGY 2: Alternative group selectors
-    if (allGroups.length === 0) {
-      const groups2 = Array.from(rootEl.querySelectorAll('.msg-s-event-listitem__group, [data-view-name*="message-group"]'));
-      if (groups2.length > 0) {
-        allGroups.push(...groups2);
-      }
-    }
-
-    // ✅ FALLBACK STRATEGY 3: Even broader selectors
-    if (allGroups.length === 0) {
-      const groups3 = Array.from(rootEl.querySelectorAll('li[data-view-name*="message"], .message-item, .conversation-message'));
-      if (groups3.length > 0) {
-        allGroups.push(...groups3);
-      }
-    }
-
-    // ✅ FALLBACK STRATEGY 4: Try without rootEl scoping if no groups found
-    if (allGroups.length === 0) {
-      const groups4 = Array.from(document.querySelectorAll('.msg-s-message-group'));
-      if (groups4.length > 0) {
-        allGroups.push(...groups4);
-      }
-    }
-
-    // ✅ FALLBACK STRATEGY 5: Generic message containers
-    if (allGroups.length === 0) {
-      const groups5 = Array.from(document.querySelectorAll('[role="listitem"][data-view-name*="message"], .msg-conversation__body li'));
-      if (groups5.length > 0) {
-        allGroups.push(...groups5);
-      }
-    }
-
-    const cappedGroups = allGroups.slice(-220); // preferimos lo más reciente
-
-    for (const g of cappedGroups) {
-      const senderName = getSenderName(g);
-      const senderProfileUrl = getSenderUrl(g);
-      const groupTime = getGroupTime(g);
-
-      // ✅ STRATEGY: Handle different LinkedIn message structures
-      let items = [];
+    // ✅ STRATEGY EXTRACTION FUNCTION: Extract messages using a specific group selection strategy
+    const extractWithStrategy = (strategyName, groupSelector, scopeEl = rootEl) => {
+      const groups = Array.from(scopeEl.querySelectorAll(groupSelector));
+      const messages = [];
       
-      // For .msg-s-event-listitem containers, they ARE the message items
-      if (g.classList.contains('msg-s-event-listitem')) {
-        items = [g];
-      } else {
-        // For .msg-s-message-group containers, look for nested items
-        items = Array.from(
-          g.querySelectorAll(
-            'li.msg-s-message-group__message, li.msg-s-event-listitem, .msg-s-event-listitem'
-          )
-        );
+      for (const g of groups) {
+        const senderName = getSenderName(g);
+        const senderProfileUrl = getSenderUrl(g);
+        const groupTime = getGroupTime(g);
+
+        let items = [];
+        
+        // Handle different LinkedIn message structures
+        if (g.classList.contains('msg-s-event-listitem')) {
+          items = [g];
+        } else {
+          items = Array.from(g.querySelectorAll('li.msg-s-message-group__message, li.msg-s-event-listitem, .msg-s-event-listitem'));
+        }
+
+        // Fallback item extraction
+        if (items.length === 0) {
+          items = Array.from(g.querySelectorAll('.message-item, [data-test-id*="message"], .conversation-message-item'));
+        }
+
+        if (items.length === 0) {
+          items = Array.from(g.querySelectorAll('p.msg-s-event-listitem__body, .msg-s-event-listitem__event-text, p[data-test-id="message-text"], .message-body'))
+            .map((p) => p.closest('li') || p.closest('div') || p)
+            .filter(Boolean);
+        }
+
+        const effectiveItems = items.length > 0 ? items : [g];
+
+        for (const it of effectiveItems) {
+          const text = getItemText(it);
+          if (!text) continue;
+
+          const t = getItemTime(it, groupTime);
+          const messageId = it.getAttribute?.('data-event-urn') || it.getAttribute?.('data-message-id') || it.id || \`\${strategyName}-msg-\${messages.length}\`;
+
+          messages.push({
+            id: messageId,
+            senderName: senderName || null,
+            senderProfileUrl: senderProfileUrl || null,
+            time: t.time || null,
+            timeRaw: t.timeRaw || null,
+            text,
+            extractionStrategy: strategyName,
+          });
+        }
       }
+      
+      return {
+        strategyName,
+        groupsFound: groups.length,
+        messages: messages,
+        messagesFound: messages.length,
+      };
+    };
 
-      // Fallback 1: Alternative item selectors
-      if (items.length === 0) {
-        items = Array.from(
-          g.querySelectorAll(
-            '.message-item, [data-test-id*="message"], .conversation-message-item'
-          )
-        );
-      }
+    // ✅ RUN ALL EXTRACTION STRATEGIES INDEPENDENTLY
+    const strategies = [
+      { name: 'primary-selectors', selector: '.msg-s-event-listitem, .msg-s-message-group', scope: rootEl },
+      { name: 'alternative-groups', selector: '.msg-s-event-listitem__group, [data-view-name*="message-group"]', scope: rootEl },
+      { name: 'broader-selectors', selector: 'li[data-view-name*="message"], .message-item, .conversation-message', scope: rootEl },
+      { name: 'global-groups', selector: '.msg-s-message-group', scope: document },
+      { name: 'generic-containers', selector: '[role="listitem"][data-view-name*="message"], .msg-conversation__body li', scope: document },
+      { name: 'meta-containers', selector: '.msg-s-message-group__meta', scope: rootEl },
+      { name: 'conversation-items', selector: '.conversation-message-item, .msg-conversation-listitem', scope: rootEl },
+    ];
 
-      // Fallback 2: Direct text containers
-      if (items.length === 0) {
-        items = Array.from(
-          g.querySelectorAll(
-            'p.msg-s-event-listitem__body, .msg-s-event-listitem__event-text, p[data-test-id="message-text"], .message-body'
-          )
-        )
-          .map((p) => p.closest('li') || p.closest('div') || p)
-          .filter(Boolean);
-      }
-
-      // Fallback 3: If still no items, treat the group itself as a message
-      const effectiveItems = items.length > 0 ? items : [g];
-
-      for (const it of effectiveItems) {
-        const text = getItemText(it);
-        if (!text) continue;
-
-        const t = getItemTime(it, groupTime);
-
-        const messageId =
-          it.getAttribute?.('data-event-urn') || 
-          it.getAttribute?.('data-message-id') ||
-          it.id || 
-          \`msg-\${messages.length}\`;
-
-        messages.push({
-          id: messageId,
-          senderName: senderName || null,
-          senderProfileUrl: senderProfileUrl || null,
-          time: t.time || null,       // ✅ HH:MM cuando se puede
-          timeRaw: t.timeRaw || null, // ✅ lo que venía en DOM
-          text,
+    const extractionResults = [];
+    
+    for (const strategy of strategies) {
+      try {
+        const result = extractWithStrategy(strategy.name, strategy.selector, strategy.scope);
+        extractionResults.push(result);
+        console.log(\`[extract-debug] \${strategy.name}: \${result.groupsFound} groups, \${result.messagesFound} messages\`);
+      } catch (e) {
+        console.log(\`[extract-debug] \${strategy.name}: extraction failed - \${e.message}\`);
+        extractionResults.push({
+          strategyName: strategy.name,
+          groupsFound: 0,
+          messages: [],
+          messagesFound: 0,
+          error: e.message,
         });
       }
     }
 
-    // ✅ FALLBACK STRATEGY 6: If still no messages, try generic text extraction
-    if (messages.length === 0) {
-      const fallbackTexts = Array.from(rootEl.querySelectorAll('p, span'))
+    // ✅ GENERIC TEXT FALLBACK STRATEGY
+    if (extractionResults.every(r => r.messagesFound === 0)) {
+      console.log('[extract-debug] All structured strategies failed, trying generic text extraction');
+      const fallbackTexts = Array.from(rootEl.querySelectorAll('p, span, div'))
         .map(el => norm(el.textContent))
-        .filter(text => text.length > 10 && text.length < 1000) // reasonable message length
-        .slice(0, 50); // limit fallback messages
+        .filter(text => text.length > 10 && text.length < 1000 && 
+                       !el.querySelector('input, button, a') &&
+                       !/^(send|enviar|type|escribir|profile|perfil)/i.test(text))
+        .slice(0, 50);
       
+      const fallbackMessages = [];
       for (let i = 0; i < fallbackTexts.length; i++) {
-        messages.push({
-          id: \`fallback-\${i}\`,
+        fallbackMessages.push({
+          id: \`generic-fallback-\${i}\`,
           senderName: null,
           senderProfileUrl: null,
           time: null,
           timeRaw: null,
           text: fallbackTexts[i],
+          extractionStrategy: 'generic-text-fallback',
         });
+      }
+      
+      extractionResults.push({
+        strategyName: 'generic-text-fallback',
+        groupsFound: 0,
+        messages: fallbackMessages,
+        messagesFound: fallbackMessages.length,
+      });
+    }
+
+    // ✅ FIND THE BEST STRATEGY (most messages with sender info, or just most messages)
+    let bestStrategy = extractionResults[0];
+    
+    for (const result of extractionResults) {
+      if (result.messagesFound === 0) continue;
+      
+      // Calculate quality score: messages count + sender info bonus
+      const currentScore = result.messagesFound;
+      const currentSenderScore = result.messages.filter(m => m.senderName || m.senderProfileUrl).length;
+      const currentQuality = currentScore + (currentSenderScore * 0.5);
+      
+      const bestScore = bestStrategy.messagesFound;
+      const bestSenderScore = bestStrategy.messages?.filter(m => m.senderName || m.senderProfileUrl).length || 0;
+      const bestQuality = bestScore + (bestSenderScore * 0.5);
+      
+      if (currentQuality > bestQuality) {
+        bestStrategy = result;
       }
     }
 
-    // Dedupe
+    // Dedupe best strategy messages
     const seen = new Set();
     const deduped = [];
-    for (const m of messages) {
+    for (const m of bestStrategy.messages || []) {
       const key = [m.senderName ?? '', m.time ?? '', m.text ?? ''].join('||');
       if (seen.has(key)) continue;
       seen.add(key);
       deduped.push(m);
     }
 
-    const reversed =
-      !!rootEl.querySelector('.msg-s-message-list-container--column-reversed') ||
-      !!document.querySelector('.msg-s-message-list-container--column-reversed');
+    const reversed = !!rootEl.querySelector('.msg-s-message-list-container--column-reversed') ||
+                    !!document.querySelector('.msg-s-message-list-container--column-reversed');
 
     const ordered = reversed ? deduped.reverse() : deduped;
 
-    // Strategy tracking
-    let strategyUsed = 'unknown';
-    if (allGroups.length === 0) {
-      strategyUsed = 'generic-text-extraction';
-    } else if (groups1.length > 0) {
-      strategyUsed = 'primary-selectors';
-    } else {
-      strategyUsed = 'alternative-selectors';
-    }
-
-    console.log('[extract-debug] Strategy:', strategyUsed, 'Groups found:', allGroups.length, 'Messages:', ordered.length);
+    console.log(\`[extract-debug] Best strategy: \${bestStrategy.strategyName} with \${ordered.length} messages\`);
 
     return {
       ok: true,
       totalFound: ordered.length,
       reversed,
       messages: ordered,
-      fallbacksUsed: strategyUsed,
+      bestStrategy: bestStrategy.strategyName,
+      allStrategies: extractionResults,
       debugInfo: {
-        groupsFound: allGroups.length,
-        primarySelectorGroups: groups1?.length || 0,
-        strategyUsed,
+        strategiesAttempted: extractionResults.length,
+        bestStrategyName: bestStrategy.strategyName,
+        bestStrategyGroups: bestStrategy.groupsFound,
+        allResults: extractionResults.map(r => ({
+          name: r.strategyName,
+          groups: r.groupsFound,
+          messages: r.messagesFound,
+          withSender: r.messages?.filter(m => m.senderName || m.senderProfileUrl).length || 0,
+        })),
       },
     };
   });
