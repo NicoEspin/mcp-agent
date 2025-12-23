@@ -1632,7 +1632,7 @@ async (page) => {
   } catch {}
 
   let msgs = Array.isArray(payload?.messages) ? payload.messages : [];
-  if (msgs.length > limit) msgs = msgs.slice(-limit);
+  if (msgs.length > limit) msgs = msgs.slice(0, limit);
 
   // ✅ FINAL FALLBACK: si 0 mensajes, fallback de texto
   if (msgs.length === 0) {
@@ -1950,7 +1950,7 @@ async (page) => {
   if ((msgs.length === 0 || !!msgs[0]?.isPlaceholder) && Array.isArray(graphqlMessages) && graphqlMessages.length > 0) {
     await debug(\`Using GraphQL fallback messages: \${graphqlMessages.length}\`);
     msgs = graphqlMessages;
-    if (msgs.length > limit) msgs = msgs.slice(-limit);
+    if (msgs.length > limit) msgs = msgs.slice(0, limit);
   }
 
   try {
