@@ -1783,27 +1783,45 @@ async (page) => {
           }
         }
         
-        // Strategy 6: Check cookies for CSRF tokens AND JSESSIONID
+        // Strategy 6: Check cookies for CSRF tokens, JSESSIONID, AND li_at
         if (!csrf) {
           debugInfo.strategiesAttempted++;
           try {
             const cookies = document.cookie.split(';');
-            // LinkedIn-specific tokens including JSESSIONID
-            const tokenCookieNames = ['csrf_token', 'csrftoken', 'CSRF-TOKEN', 'X-CSRF-TOKEN', 'li_csrf', 'JSESSIONID', 'jsessionid'];
+            const cookieMap = {};
             
+            // Parse all cookies into a map
             for (const cookie of cookies) {
               const [name, value] = cookie.trim().split('=');
-              if (tokenCookieNames.includes(name) && value && value.length > 5) { // Lower threshold for JSESSIONID
-                csrf = decodeURIComponent(value);
+              if (name && value) {
+                cookieMap[name] = decodeURIComponent(value);
+              }
+            }
+            
+            // LinkedIn authentication priority:
+            // 1. JSESSIONID (contains CSRF token)
+            // 2. Traditional CSRF tokens  
+            // 3. li_at (authentication token - may also serve as CSRF)
+            const tokenPriority = [
+              'JSESSIONID', 'jsessionid',
+              'csrf_token', 'csrftoken', 'CSRF-TOKEN', 'X-CSRF-TOKEN', 'li_csrf',
+              'li_at'  // LinkedIn authentication token
+            ];
+            
+            for (const cookieName of tokenPriority) {
+              if (cookieMap[cookieName] && cookieMap[cookieName].length > 5) {
+                csrf = cookieMap[cookieName];
                 debugInfo.strategiesSuccessful++;
-                debugInfo.details.push(\`Found in cookie: \${name}\`);
+                debugInfo.details.push(\`Found in cookie: \${cookieName}\`);
                 break;
               }
             }
             
-            // Special handling: Log all cookies for debugging
+            // Enhanced debug info
             debugInfo.details.push(\`Total cookies found: \${cookies.length}\`);
-            debugInfo.details.push(\`Cookie names: \${cookies.map(c => c.split('=')[0].trim()).join(', ')}\`);
+            debugInfo.details.push(\`Cookie names: \${Object.keys(cookieMap).join(', ')}\`);
+            debugInfo.details.push(\`li_at present: \${!!cookieMap.li_at}\`);
+            debugInfo.details.push(\`JSESSIONID present: \${!!cookieMap.JSESSIONID}\`);
             
           } catch (e) {
             debugInfo.details.push(\`Cookie parsing error: \${e.message}\`);
@@ -1859,18 +1877,37 @@ async (page) => {
           }
         }
         
+        // ✅ POST-PROCESSING: Parse CSRF token from JSESSIONID or other sources
+        let finalCsrf = csrf;
+        if (csrf && csrf !== 'no-csrf-found') {
+          // LinkedIn often stores CSRF token in JSESSIONID with format: "ajax:ACTUAL_TOKEN"
+          if (csrf.includes('ajax:')) {
+            const match = csrf.match(/ajax[:"]*([^"']+)/);
+            if (match && match[1]) {
+              finalCsrf = match[1];
+              debugInfo.details.push(\`Parsed CSRF from JSESSIONID ajax format: \${finalCsrf}\`);
+            }
+          }
+          // Remove surrounding quotes if present
+          finalCsrf = finalCsrf.replace(/^["']|["']$/g, '');
+        }
+        
         // Final fallback
-        if (!csrf) {
-          csrf = 'no-csrf-found';
+        if (!finalCsrf || finalCsrf === 'no-csrf-found') {
+          finalCsrf = 'no-csrf-found';
         }
 
         const res = await fetch(testUrl, {
           method: "GET",
           credentials: "include",
           headers: {
-            "csrf-token": csrf,
+            // LinkedIn Voyager API specific headers
+            "csrf-token": finalCsrf,
+            "x-csrf-token": finalCsrf,
+            "X-CSRF-TOKEN": finalCsrf,
             "accept": "application/json",
             "x-restli-protocol-version": "2.0.0",
+            "x-li-lang": "en_US",
           },
         });
 
@@ -1882,7 +1919,8 @@ async (page) => {
           statusText: res.statusText,
           headers: Object.fromEntries(res.headers.entries()),
           responseText: responseText.slice(0, 2000), // Limit response size
-          csrf: csrf,
+          csrf: finalCsrf, // Show the processed CSRF token
+          rawCsrf: csrf, // Show the original raw token
           csrfDebug: {
             // Enhanced debug information
             strategiesAttempted: debugInfo.strategiesAttempted,
