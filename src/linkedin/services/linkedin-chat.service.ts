@@ -669,43 +669,153 @@ async (page) => {
         try {
           // Handle different date context formats
           let targetDate = new Date();
+          const today = new Date();
+          let parsedSuccessfully = false;
           
           if (typeof dateContext === 'string') {
-            // Parse day names (Monday, Tuesday, etc.)
-            const dayNames = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-            const dayName = dateContext.toLowerCase().trim();
-            const dayIndex = dayNames.indexOf(dayName);
+            const dateText = dateContext.toLowerCase().trim();
             
-            if (dayIndex !== -1) {
-              // Calculate the most recent occurrence of this weekday
-              const today = new Date();
-              const todayDay = today.getDay();
-              let daysBack = (todayDay - dayIndex + 7) % 7;
-              if (daysBack === 0) {
-                // If it's the same day, check if the time has passed
-                const nowHour = today.getHours();
-                const nowMinute = today.getMinutes();
-                if (hour24 > nowHour || (hour24 === nowHour && minute > nowMinute)) {
-                  // Time hasn't passed today, so it's last week
-                  daysBack = 7;
+            // Strategy 1: Handle relative dates (Today, Yesterday, etc.)
+            if (['today', 'hoy', 'hoje'].includes(dateText)) {
+              targetDate = new Date(today);
+              parsedSuccessfully = true;
+            } else if (['yesterday', 'ayer', 'ontem'].includes(dateText)) {
+              targetDate = new Date(today);
+              targetDate.setDate(today.getDate() - 1);
+              parsedSuccessfully = true;
+            }
+            
+            // Strategy 2: Parse specific dates (16 dic, 16 December, etc.)
+            if (!parsedSuccessfully) {
+              // Spanish months
+              const spanishMonths = {
+                'ene': 0, 'enero': 0,
+                'feb': 1, 'febrero': 1, 'febr': 1,
+                'mar': 2, 'marzo': 2,
+                'abr': 3, 'abril': 3,
+                'may': 4, 'mayo': 4,
+                'jun': 5, 'junio': 5,
+                'jul': 6, 'julio': 6,
+                'ago': 7, 'agosto': 7,
+                'sep': 8, 'septiembre': 8, 'sept': 8,
+                'oct': 9, 'octubre': 9,
+                'nov': 10, 'noviembre': 10,
+                'dic': 11, 'diciembre': 11
+              };
+              
+              // English months
+              const englishMonths = {
+                'jan': 0, 'january': 0,
+                'feb': 1, 'february': 1,
+                'mar': 2, 'march': 2,
+                'apr': 3, 'april': 3,
+                'may': 4,
+                'jun': 5, 'june': 5,
+                'jul': 6, 'july': 6,
+                'aug': 7, 'august': 7,
+                'sep': 8, 'september': 8, 'sept': 8,
+                'oct': 9, 'october': 9,
+                'nov': 10, 'november': 11,
+                'dec': 11, 'december': 11
+              };
+              
+              // Combined months mapping
+              const allMonths = { ...spanishMonths, ...englishMonths };
+              
+              // Pattern 1: "16 dic", "16 December", "16 de diciembre"
+              const datePattern1 = dateText.match(/^(\\d{1,2})\\s+(?:de\\s+)?(\\w+)$/);
+              if (datePattern1) {
+                const day = parseInt(datePattern1[1], 10);
+                const monthStr = datePattern1[2];
+                const monthIndex = allMonths[monthStr];
+                
+                if (monthIndex !== undefined && day >= 1 && day <= 31) {
+                  // Determine the year (current year or previous year)
+                  const currentYear = today.getFullYear();
+                  const currentMonth = today.getMonth();
+                  const currentDay = today.getDate();
+                  
+                  // Try current year first
+                  targetDate = new Date(currentYear, monthIndex, day);
+                  
+                  // If the date is in the future, it might be from last year
+                  if (targetDate > today) {
+                    targetDate = new Date(currentYear - 1, monthIndex, day);
+                  }
+                  
+                  parsedSuccessfully = true;
+                  console.log(\`[datetime-extract] Parsed date "\${dateText}" as \${targetDate.toDateString()}\`);
                 }
               }
               
-              targetDate = new Date(today);
-              targetDate.setDate(today.getDate() - daysBack);
-              targetDate.setHours(hour24, minute, 0, 0);
+              // Pattern 2: "December 16", "diciembre 16"
+              if (!parsedSuccessfully) {
+                const datePattern2 = dateText.match(/^(\\w+)\\s+(\\d{1,2})$/);
+                if (datePattern2) {
+                  const monthStr = datePattern2[1];
+                  const day = parseInt(datePattern2[2], 10);
+                  const monthIndex = allMonths[monthStr];
+                  
+                  if (monthIndex !== undefined && day >= 1 && day <= 31) {
+                    const currentYear = today.getFullYear();
+                    targetDate = new Date(currentYear, monthIndex, day);
+                    
+                    if (targetDate > today) {
+                      targetDate = new Date(currentYear - 1, monthIndex, day);
+                    }
+                    
+                    parsedSuccessfully = true;
+                    console.log(\`[datetime-extract] Parsed date "\${dateText}" as \${targetDate.toDateString()}\`);
+                  }
+                }
+              }
+            }
+            
+            // Strategy 3: Parse day names (Monday, Tuesday, jueves, lunes, etc.)
+            if (!parsedSuccessfully) {
+              const dayNames = {
+                // English days
+                'sunday': 0, 'monday': 1, 'tuesday': 2, 'wednesday': 3, 'thursday': 4, 'friday': 5, 'saturday': 6,
+                'sun': 0, 'mon': 1, 'tue': 2, 'wed': 3, 'thu': 4, 'fri': 5, 'sat': 6,
+                // Spanish days
+                'domingo': 0, 'lunes': 1, 'martes': 2, 'miércoles': 3, 'jueves': 4, 'viernes': 5, 'sábado': 6,
+                'dom': 0, 'lun': 1, 'mar': 2, 'mié': 3, 'jue': 4, 'vie': 5, 'sáb': 6
+              };
               
-              fullDateTime = targetDate.toISOString();
+              const dayIndex = dayNames[dateText];
+              if (dayIndex !== undefined) {
+                // Calculate the most recent occurrence of this weekday
+                const todayDay = today.getDay();
+                let daysBack = (todayDay - dayIndex + 7) % 7;
+                if (daysBack === 0) {
+                  // If it's the same day, check if the time has passed
+                  const nowHour = today.getHours();
+                  const nowMinute = today.getMinutes();
+                  if (hour24 > nowHour || (hour24 === nowHour && minute > nowMinute)) {
+                    // Time hasn't passed today, so it's last week
+                    daysBack = 7;
+                  }
+                }
+                
+                targetDate = new Date(today);
+                targetDate.setDate(today.getDate() - daysBack);
+                parsedSuccessfully = true;
+                console.log(\`[datetime-extract] Parsed weekday "\${dateText}" as \${targetDate.toDateString()}\`);
+              }
             }
           } else if (dateContext instanceof Date) {
             // Direct date object
             targetDate = new Date(dateContext);
-            targetDate.setHours(hour24, minute, 0, 0);
-            fullDateTime = targetDate.toISOString();
+            parsedSuccessfully = true;
           }
           
-          // Fallback: use today's date if no valid date context
-          if (!fullDateTime) {
+          // Apply the time to the target date
+          if (parsedSuccessfully) {
+            targetDate.setHours(hour24, minute, 0, 0);
+            fullDateTime = targetDate.toISOString();
+          } else {
+            // Fallback: use today's date with the time
+            console.log(\`[datetime-extract] Could not parse date context "\${dateContext}", using today\`);
             targetDate = new Date();
             targetDate.setHours(hour24, minute, 0, 0);
             fullDateTime = targetDate.toISOString();
@@ -728,48 +838,137 @@ async (page) => {
       };
     };
 
-    // ✅ NEW: Extract date headers and build date context mapping
+    // ✅ ENHANCED: Extract date headers and build accurate date context mapping
     const extractDateHeaders = () => {
       const dateHeaders = Array.from(rootEl.querySelectorAll('.msg-s-message-list__time-heading, time.msg-s-message-list__time-heading'));
       const dateMap = new Map();
       
-      for (let i = 0; i < dateHeaders.length; i++) {
-        const header = dateHeaders[i];
-        const dateText = norm(header.textContent);
-        
-        if (dateText) {
-          // Get all elements that come after this date header until the next date header
-          const nextHeader = dateHeaders[i + 1];
-          const startElement = header.parentElement || header;
+      console.log(\`[date-extract] Found \${dateHeaders.length} date headers\`);
+      
+      // Strategy 1: Use TreeWalker to traverse DOM in document order
+      const walker = document.createTreeWalker(
+        rootEl,
+        NodeFilter.SHOW_ELEMENT,
+        {
+          acceptNode: function(node) {
+            // Accept date headers and message elements
+            if (node.classList.contains('msg-s-message-list__time-heading') ||
+                node.tagName === 'TIME' && node.classList.contains('msg-s-message-list__time-heading') ||
+                node.classList.contains('msg-s-event-listitem') ||
+                node.classList.contains('msg-s-message-group') ||
+                node.classList.contains('msg-s-message-list__event')) {
+              return NodeFilter.FILTER_ACCEPT;
+            }
+            return NodeFilter.FILTER_SKIP;
+          }
+        },
+        false
+      );
+      
+      let currentDateContext = null;
+      let node;
+      
+      while (node = walker.nextNode()) {
+        // Check if this is a date header
+        if ((node.classList.contains('msg-s-message-list__time-heading') || 
+            (node.tagName === 'TIME' && node.classList.contains('msg-s-message-list__time-heading')))) {
+          const dateText = norm(node.textContent);
+          if (dateText) {
+            currentDateContext = dateText;
+            console.log(\`[date-extract] Found date header: "\${dateText}"\`);
+          }
+        }
+        // Check if this is a message element
+        else if (currentDateContext && (
+          node.classList.contains('msg-s-event-listitem') ||
+          node.classList.contains('msg-s-message-group') ||
+          node.classList.contains('msg-s-message-list__event'))) {
+          dateMap.set(node, currentDateContext);
+        }
+      }
+      
+      // Strategy 2: Fallback using DOM position for elements not caught by TreeWalker
+      const allMessages = Array.from(rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group, .msg-s-message-list__event'));
+      
+      for (const message of allMessages) {
+        if (!dateMap.has(message)) {
+          // Find the closest preceding date header using DOM traversal
+          let current = message;
+          let foundDateHeader = null;
           
-          let currentElement = startElement.nextElementSibling;
-          const elementsInRange = [];
-          
-          while (currentElement && (!nextHeader || !nextHeader.parentElement?.contains(currentElement))) {
-            elementsInRange.push(currentElement);
+          // Walk backwards through the DOM
+          while (current && current !== rootEl) {
+            // Check previous siblings
+            let prevSibling = current.previousElementSibling;
+            while (prevSibling) {
+              const dateHeader = prevSibling.querySelector('.msg-s-message-list__time-heading, time.msg-s-message-list__time-heading');
+              if (dateHeader) {
+                foundDateHeader = norm(dateHeader.textContent);
+                break;
+              }
+              if (prevSibling.classList.contains('msg-s-message-list__time-heading') ||
+                  (prevSibling.tagName === 'TIME' && prevSibling.classList.contains('msg-s-message-list__time-heading'))) {
+                foundDateHeader = norm(prevSibling.textContent);
+                break;
+              }
+              prevSibling = prevSibling.previousElementSibling;
+            }
             
-            // Also check nested elements
-            const nestedMessages = currentElement.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group');
-            elementsInRange.push(...Array.from(nestedMessages));
+            if (foundDateHeader) break;
             
-            currentElement = currentElement.nextElementSibling;
-            
-            // Safety check to prevent infinite loops
-            if (elementsInRange.length > 1000) break;
+            // Move up to parent and continue search
+            current = current.parentElement;
           }
           
-          // Map each message element to this date context
-          for (const element of elementsInRange) {
-            if (element.classList && (element.classList.contains('msg-s-event-listitem') || 
-                element.classList.contains('msg-s-message-group') ||
-                element.querySelector('.msg-s-event-listitem, .msg-s-message-group'))) {
-              dateMap.set(element, dateText);
+          if (foundDateHeader) {
+            dateMap.set(message, foundDateHeader);
+          }
+        }
+      }
+      
+      // Strategy 3: Final fallback using document.compareDocumentPosition
+      for (const message of allMessages) {
+        if (!dateMap.has(message)) {
+          let closestHeader = null;
+          let closestDistance = Infinity;
+          
+          for (const header of dateHeaders) {
+            // Check if header comes before this message in document order
+            const position = header.compareDocumentPosition(message);
+            if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+              // Calculate approximate distance (simple heuristic)
+              const headerRect = header.getBoundingClientRect();
+              const messageRect = message.getBoundingClientRect();
+              const distance = Math.abs(messageRect.top - headerRect.bottom);
+              
+              if (distance < closestDistance) {
+                closestDistance = distance;
+                closestHeader = header;
+              }
+            }
+          }
+          
+          if (closestHeader) {
+            const dateText = norm(closestHeader.textContent);
+            if (dateText) {
+              dateMap.set(message, dateText);
             }
           }
         }
       }
       
-      console.log(\`[date-extract] Found \${dateHeaders.length} date headers, mapped \${dateMap.size} message elements\`);
+      console.log(\`[date-extract] Successfully mapped \${dateMap.size} message elements to date contexts\`);
+      
+      // Debug: Print some mappings
+      let debugCount = 0;
+      for (const [element, dateContext] of dateMap.entries()) {
+        if (debugCount < 5) {
+          const messageText = element.querySelector('.msg-s-event-listitem__body')?.textContent?.slice(0, 30) || 'no text';
+          console.log(\`[date-extract] Message "\${messageText}..." -> Date context "\${dateContext}"\`);
+          debugCount++;
+        }
+      }
+      
       return dateMap;
     };
 
