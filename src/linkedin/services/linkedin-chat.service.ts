@@ -1646,52 +1646,113 @@ async (page) => {
 
     graphqlTestResult = await page.evaluate(async (testUrl) => {
       try {
-        // Get CSRF token from multiple LinkedIn-specific sources
+        // Enhanced CSRF token extraction with comprehensive LinkedIn-specific strategies
         let csrf = null;
+        let debugInfo = {
+          strategiesAttempted: 0,
+          strategiesSuccessful: 0,
+          details: []
+        };
         
-        // Strategy 1: Check window object properties
-        csrf = window.csrfToken || window._csrf || window.CSRF_TOKEN;
+        // Strategy 1: Check window object properties (LinkedIn globals)
+        debugInfo.strategiesAttempted++;
+        const windowProps = ['csrfToken', '_csrf', 'CSRF_TOKEN', 'voyagerCsrfToken'];
+        for (const prop of windowProps) {
+          if (window[prop]) {
+            csrf = window[prop];
+            debugInfo.strategiesSuccessful++;
+            debugInfo.details.push(\`Found in window.\${prop}\`);
+            break;
+          }
+        }
         
-        // Strategy 2: Check meta tags with various names
+        // Strategy 2: Enhanced meta tag detection
         if (!csrf) {
+          debugInfo.strategiesAttempted++;
           const metaSelectors = [
             'meta[name="csrf-token"]',
-            'meta[name="_csrf"]',
+            'meta[name="_csrf"]', 
             'meta[name="csrf_token"]',
             'meta[name="x-csrf-token"]',
             'meta[property="csrf-token"]',
-            'meta[http-equiv="csrf-token"]'
+            'meta[http-equiv="csrf-token"]',
+            'meta[name="voyager-csrf"]',
+            'meta[name="li-csrf"]'
           ];
           
           for (const selector of metaSelectors) {
             const meta = document.querySelector(selector);
             if (meta) {
-              csrf = meta.getAttribute('content') || meta.getAttribute('value');
-              if (csrf) break;
+              const token = meta.getAttribute('content') || meta.getAttribute('value') || meta.getAttribute('csrf');
+              if (token && token.length > 10) {
+                csrf = token;
+                debugInfo.strategiesSuccessful++;
+                debugInfo.details.push(\`Found in meta tag: \${selector}\`);
+                break;
+              }
             }
           }
         }
         
-        // Strategy 3: Check for LinkedIn-specific CSRF in script tags or data attributes
+        // Strategy 3: LinkedIn app state and configuration objects
         if (!csrf) {
-          // Look for CSRF in script tags containing LinkedIn config
+          debugInfo.strategiesAttempted++;
+          
+          // Check LinkedIn's global state objects
+          const stateObjects = [
+            () => window.lix?.clientState?.csrfToken,
+            () => window.lix?.clientState?.csrf,
+            () => window.appConfig?.csrfToken,
+            () => window.appConfig?.csrf,
+            () => window.voyagerCsrf,
+            () => window.linkedInConfig?.csrf,
+            () => window.pageConfig?.csrf,
+            () => window.__INITIAL_STATE__?.csrf,
+            () => window.__CONFIG__?.csrfToken
+          ];
+          
+          for (const getter of stateObjects) {
+            try {
+              const token = getter();
+              if (token && typeof token === 'string' && token.length > 10) {
+                csrf = token;
+                debugInfo.strategiesSuccessful++;
+                debugInfo.details.push('Found in LinkedIn state object');
+                break;
+              }
+            } catch (e) {
+              // Continue to next getter
+            }
+          }
+        }
+        
+        // Strategy 4: Enhanced script tag parsing with better patterns
+        if (!csrf) {
+          debugInfo.strategiesAttempted++;
           const scripts = document.querySelectorAll('script');
+          
+          // Enhanced regex patterns for different CSRF token formats
+          const patterns = [
+            /"csrf[Tt]oken"[\\s]*:[\\s]*"([^"]{20,})"/,
+            /'csrf[Tt]oken'[\\s]*:[\\s]*'([^']{20,})'/,
+            /csrf[Tt]oken[\\s]*=[\\s]*['"]([^'"]{20,})['"]/,
+            /"_csrf"[\\s]*:[\\s]*"([^"]{20,})"/,
+            /'_csrf'[\\s]*:[\\s]*'([^']{20,})'/,
+            /voyager[Cc]srf[\\s]*:[\\s]*['"]([^'"]{20,})['"]/,
+            /"X-CSRF-TOKEN"[\\s]*:[\\s]*"([^"]{20,})"/,
+            /csrf[\\s]*:[\\s]*['"]([^'"]{20,})['"]/,
+            /"csrfParam"[\\s]*:[\\s]*"([^"]{20,})"/
+          ];
+          
           for (const script of scripts) {
             const text = script.textContent || script.innerHTML;
-            if (text && text.includes('csrf')) {
-              // Try to extract CSRF from various patterns
-              const patterns = [
-                /"csrf[Tt]oken"\\s*:\\s*"([^"]+)"/,
-                /'csrf[Tt]oken'\\s*:\\s*'([^']+)'/,
-                /csrf[Tt]oken['"]*\\s*[=:]\\s*['"]([^'"]+)['"]/,
-                /"_csrf"\\s*:\\s*"([^"]+)"/,
-                /'_csrf'\\s*:\\s*'([^']+)'/
-              ];
-              
+            if (text && (text.includes('csrf') || text.includes('CSRF'))) {
               for (const pattern of patterns) {
                 const match = text.match(pattern);
-                if (match && match[1]) {
+                if (match && match[1] && match[1].length > 10) {
                   csrf = match[1];
+                  debugInfo.strategiesSuccessful++;
+                  debugInfo.details.push('Found in script tag with regex');
                   break;
                 }
               }
@@ -1700,25 +1761,99 @@ async (page) => {
           }
         }
         
-        // Strategy 4: Check for CSRF in data attributes on html/body
+        // Strategy 5: Check form inputs and hidden fields
         if (!csrf) {
-          const dataAttrs = ['data-csrf-token', 'data-csrf', 'data-x-csrf-token'];
-          for (const attr of dataAttrs) {
-            csrf = document.documentElement.getAttribute(attr) || document.body.getAttribute(attr);
+          debugInfo.strategiesAttempted++;
+          const hiddenInputs = document.querySelectorAll('input[type="hidden"]');
+          
+          for (const input of hiddenInputs) {
+            const name = input.getAttribute('name');
+            const value = input.getAttribute('value');
+            
+            if (name && value && value.length > 10 && 
+                (name.toLowerCase().includes('csrf') || 
+                 name.toLowerCase().includes('token') ||
+                 name === '_token' || 
+                 name === 'authenticity_token')) {
+              csrf = value;
+              debugInfo.strategiesSuccessful++;
+              debugInfo.details.push(\`Found in hidden input: \${name}\`);
+              break;
+            }
+          }
+        }
+        
+        // Strategy 6: Check cookies for CSRF tokens
+        if (!csrf) {
+          debugInfo.strategiesAttempted++;
+          try {
+            const cookies = document.cookie.split(';');
+            const csrfCookieNames = ['csrf_token', 'csrftoken', 'CSRF-TOKEN', 'X-CSRF-TOKEN', 'li_csrf'];
+            
+            for (const cookie of cookies) {
+              const [name, value] = cookie.trim().split('=');
+              if (csrfCookieNames.includes(name) && value && value.length > 10) {
+                csrf = decodeURIComponent(value);
+                debugInfo.strategiesSuccessful++;
+                debugInfo.details.push(\`Found in cookie: \${name}\`);
+                break;
+              }
+            }
+          } catch (e) {
+            debugInfo.details.push(\`Cookie parsing error: \${e.message}\`);
+          }
+        }
+        
+        // Strategy 7: Check local/session storage
+        if (!csrf) {
+          debugInfo.strategiesAttempted++;
+          try {
+            const storageKeys = ['csrf_token', 'csrfToken', 'voyager_csrf', 'li_csrf'];
+            
+            for (const key of storageKeys) {
+              let token = localStorage.getItem(key) || sessionStorage.getItem(key);
+              if (token && token.length > 10) {
+                csrf = token;
+                debugInfo.strategiesSuccessful++;
+                debugInfo.details.push(\`Found in storage: \${key}\`);
+                break;
+              }
+            }
+          } catch (e) {
+            debugInfo.details.push(\`Storage access error: \${e.message}\`);
+          }
+        }
+        
+        // Strategy 8: Try to extract from any data attributes on key LinkedIn elements
+        if (!csrf) {
+          debugInfo.strategiesAttempted++;
+          const keyElements = [
+            document.documentElement,
+            document.body,
+            document.querySelector('#app'),
+            document.querySelector('[data-app-name]'),
+            document.querySelector('.authentication-outlet'),
+            document.querySelector('.voyager-feed')
+          ];
+          
+          const dataAttrs = ['data-csrf-token', 'data-csrf', 'data-x-csrf-token', 'data-voyager-csrf'];
+          
+          for (const element of keyElements) {
+            if (!element) continue;
+            for (const attr of dataAttrs) {
+              const token = element.getAttribute(attr);
+              if (token && token.length > 10) {
+                csrf = token;
+                debugInfo.strategiesSuccessful++;
+                debugInfo.details.push(\`Found in element data attribute: \${attr}\`);
+                break;
+              }
+            }
             if (csrf) break;
           }
         }
         
-        // Strategy 5: Check for LinkedIn's client state or app config
-        if (!csrf && window.lix && window.lix.clientState) {
-          csrf = window.lix.clientState.csrfToken || window.lix.clientState.csrf;
-        }
-        
-        if (!csrf && window.appConfig) {
-          csrf = window.appConfig.csrfToken || window.appConfig.csrf;
-        }
-        
-        // Fallback
+        // Final fallback
         if (!csrf) {
           csrf = 'no-csrf-found';
         }
@@ -1735,18 +1870,6 @@ async (page) => {
 
         const responseText = await res.text();
         
-        // Debug info about CSRF detection
-        const csrfDebugInfo = {
-          windowCsrfToken: !!window.csrfToken,
-          windowCsrf: !!window._csrf,
-          windowCSRFTOKEN: !!window.CSRF_TOKEN,
-          metaTagsChecked: document.querySelectorAll('meta[name*="csrf"], meta[property*="csrf"]').length,
-          scriptsWithCsrf: Array.from(document.querySelectorAll('script')).filter(s => (s.textContent || '').includes('csrf')).length,
-          hasLixClientState: !!(window.lix && window.lix.clientState),
-          hasAppConfig: !!window.appConfig,
-          foundCsrf: csrf !== 'no-csrf-found'
-        };
-        
         return {
           ok: res.ok,
           status: res.status,
@@ -1754,7 +1877,26 @@ async (page) => {
           headers: Object.fromEntries(res.headers.entries()),
           responseText: responseText.slice(0, 2000), // Limit response size
           csrf: csrf,
-          csrfDebug: csrfDebugInfo,
+          csrfDebug: {
+            // Enhanced debug information
+            strategiesAttempted: debugInfo.strategiesAttempted,
+            strategiesSuccessful: debugInfo.strategiesSuccessful,
+            details: debugInfo.details,
+            foundCsrf: csrf !== 'no-csrf-found',
+            csrfLength: csrf !== 'no-csrf-found' ? csrf.length : 0,
+            // Legacy debug info for compatibility
+            windowCsrfToken: !!window.csrfToken,
+            windowCsrf: !!window._csrf,
+            windowCSRFTOKEN: !!window.CSRF_TOKEN,
+            metaTagsChecked: document.querySelectorAll('meta[name*="csrf"], meta[property*="csrf"]').length,
+            scriptsWithCsrf: Array.from(document.querySelectorAll('script')).filter(s => (s.textContent || '').includes('csrf')).length,
+            hasLixClientState: !!(window.lix && window.lix.clientState),
+            hasAppConfig: !!window.appConfig,
+            cookiesAvailable: !!document.cookie,
+            storageAvailable: !!(typeof Storage !== 'undefined'),
+            totalScriptsChecked: document.querySelectorAll('script').length,
+            totalMetaTagsChecked: document.querySelectorAll('meta').length
+          },
           url: testUrl
         };
       } catch (e) {
