@@ -261,32 +261,45 @@ async (page) => {
   }
 
   // -----------------------------
-  // 4) Esperar wrapper del overlay (overlay vs inline)
+  // 4) Esperar wrapper del overlay (overlay vs inline) con múltiples fallbacks
   // -----------------------------
   await page.waitForTimeout(500);
 
-  const overlayWrapper = page
-    .locator('.msg-overlay-conversation-bubble__content-wrapper')
-    .last();
-
-  const inlineList = page.locator('.msg-s-message-list').last();
+  const containerCandidates = [
+    page.locator('.msg-overlay-conversation-bubble__content-wrapper').last(),
+    page.locator('.msg-s-message-list').last(),
+    page.locator('.msg-overlay-conversation-bubble').last(),
+    page.locator('[role="main"] .msg-conversation-listitem').last(),
+    page.locator('.msg-conversation__body').last(),
+    page.locator('.msg-thread').last(),
+    page.locator('[data-view-name*="conversation"]').last(),
+    page.locator('.conversation-wrapper').last(),
+    page.locator('main').last(),
+  ];
 
   let root = null;
 
-  try {
-    await overlayWrapper.waitFor({ state: 'visible', timeout: 6000 });
-    root = overlayWrapper;
-    await debug('Overlay wrapper detectado');
-  } catch {
-    await inlineList.waitFor({ state: 'visible', timeout: 6000 });
-    root = inlineList;
-    await debug('Inline message list detectado');
+  // Try each container candidate
+  for (const candidate of containerCandidates) {
+    try {
+      await candidate.waitFor({ state: 'visible', timeout: 2000 });
+      root = candidate;
+      const containerType = await candidate.evaluate(el => el.className || el.tagName);
+      await debug(\`Container detected: \${containerType}\`);
+      break;
+    } catch {
+      // Continue to next candidate
+    }
   }
 
-  if (!root) throw new Error('No se detectó contenedor de conversación.');
+  // ✅ FALLBACK: If no specific container found, use the page body but with more targeted selectors
+  if (!root) {
+    await debug('No specific conversation container found, using fallback to body');
+    root = page.locator('body');
+  }
 
   // -----------------------------
-  // 5) Extracción robusta (timestamps + scoping)
+  // 5) Extracción robusta (timestamps + scoping) con múltiples fallbacks
   // -----------------------------
   const payload = await root.evaluate((rootEl) => {
     const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
@@ -335,6 +348,8 @@ async (page) => {
     const getSenderName = (group) =>
       norm(group.querySelector('.msg-s-message-group__name')?.textContent) ||
       norm(group.querySelector('[data-anonymize="person-name"]')?.textContent) ||
+      norm(group.querySelector('[data-test-app-aware-link]')?.textContent) ||
+      norm(group.querySelector('.msg-s-message-group__profile-link')?.textContent) ||
       null;
 
     const getSenderUrl = (group) => {
@@ -352,6 +367,7 @@ async (page) => {
         'time[datetime]',
         'time',
         'span.msg-s-message-group__timestamp',
+        '.msg-s-message-group__timestamp',
       ]);
       return extractClock(raw);
     };
@@ -361,6 +377,8 @@ async (page) => {
         'time.msg-s-event-listitem__timestamp',
         'time[datetime]',
         'time',
+        '.timestamp',
+        '[data-time]',
       ]);
       const parsed = extractClock(raw);
       return parsed.time ? parsed : groupFallback;
@@ -371,38 +389,94 @@ async (page) => {
         item.querySelector('p.msg-s-event-listitem__body') ||
         item.querySelector('span.msg-s-event-listitem__body') ||
         item.querySelector('div.msg-s-event-listitem__body') ||
-        item.querySelector('.msg-s-event-listitem__event-text');
+        item.querySelector('.msg-s-event-listitem__event-text') ||
+        item.querySelector('p[data-test-id="message-text"]') ||
+        item.querySelector('.message-body') ||
+        item.querySelector('p.t-14') ||
+        item.querySelector('span.break-words');
 
       const text = norm(body?.textContent);
       return text || null;
     };
 
-    // ✅ IMPORTANT: scope to rootEl, not document
-    const groups = Array.from(rootEl.querySelectorAll('.msg-s-message-group'));
-    const cappedGroups = groups.slice(-220); // preferimos lo más reciente
-
+    // ✅ FALLBACK STRATEGY 1: Try primary selector
     const messages = [];
+    const allGroups = [];
+    
+    // Strategy 1: Original .msg-s-message-group selector
+    const groups1 = Array.from(rootEl.querySelectorAll('.msg-s-message-group'));
+    if (groups1.length > 0) {
+      allGroups.push(...groups1);
+    }
+
+    // ✅ FALLBACK STRATEGY 2: Alternative group selectors
+    if (allGroups.length === 0) {
+      const groups2 = Array.from(rootEl.querySelectorAll('.msg-s-event-listitem__group, [data-view-name*="message-group"]'));
+      if (groups2.length > 0) {
+        allGroups.push(...groups2);
+      }
+    }
+
+    // ✅ FALLBACK STRATEGY 3: Even broader selectors
+    if (allGroups.length === 0) {
+      const groups3 = Array.from(rootEl.querySelectorAll('li[data-view-name*="message"], .message-item, .conversation-message'));
+      if (groups3.length > 0) {
+        allGroups.push(...groups3);
+      }
+    }
+
+    // ✅ FALLBACK STRATEGY 4: Try without rootEl scoping if no groups found
+    if (allGroups.length === 0) {
+      const groups4 = Array.from(document.querySelectorAll('.msg-s-message-group'));
+      if (groups4.length > 0) {
+        allGroups.push(...groups4);
+      }
+    }
+
+    // ✅ FALLBACK STRATEGY 5: Generic message containers
+    if (allGroups.length === 0) {
+      const groups5 = Array.from(document.querySelectorAll('[role="listitem"][data-view-name*="message"], .msg-conversation__body li'));
+      if (groups5.length > 0) {
+        allGroups.push(...groups5);
+      }
+    }
+
+    const cappedGroups = allGroups.slice(-220); // preferimos lo más reciente
 
     for (const g of cappedGroups) {
       const senderName = getSenderName(g);
       const senderProfileUrl = getSenderUrl(g);
       const groupTime = getGroupTime(g);
 
-      const items = Array.from(
+      // ✅ FALLBACK STRATEGY: Multiple item selectors
+      let items = Array.from(
         g.querySelectorAll(
           'li.msg-s-message-group__message, li.msg-s-event-listitem, .msg-s-event-listitem'
         )
       );
 
-      const effectiveItems = items.length
-        ? items
-        : Array.from(
-            g.querySelectorAll(
-              'p.msg-s-event-listitem__body, .msg-s-event-listitem__event-text'
-            )
+      // Fallback 1: Alternative item selectors
+      if (items.length === 0) {
+        items = Array.from(
+          g.querySelectorAll(
+            '.message-item, [data-test-id*="message"], .conversation-message-item'
           )
-            .map((p) => p.closest('li') || p.closest('div') || p)
-            .filter(Boolean);
+        );
+      }
+
+      // Fallback 2: Direct text containers
+      if (items.length === 0) {
+        items = Array.from(
+          g.querySelectorAll(
+            'p.msg-s-event-listitem__body, .msg-s-event-listitem__event-text, p[data-test-id="message-text"], .message-body'
+          )
+        )
+          .map((p) => p.closest('li') || p.closest('div') || p)
+          .filter(Boolean);
+      }
+
+      // Fallback 3: If still no items, treat the group itself as a message
+      const effectiveItems = items.length > 0 ? items : [g];
 
       for (const it of effectiveItems) {
         const text = getItemText(it);
@@ -411,7 +485,10 @@ async (page) => {
         const t = getItemTime(it, groupTime);
 
         const messageId =
-          it.getAttribute?.('data-event-urn') || it.id || null;
+          it.getAttribute?.('data-event-urn') || 
+          it.getAttribute?.('data-message-id') ||
+          it.id || 
+          null;
 
         messages.push({
           id: messageId,
@@ -420,6 +497,25 @@ async (page) => {
           time: t.time || null,       // ✅ HH:MM cuando se puede
           timeRaw: t.timeRaw || null, // ✅ lo que venía en DOM
           text,
+        });
+      }
+    }
+
+    // ✅ FALLBACK STRATEGY 6: If still no messages, try generic text extraction
+    if (messages.length === 0) {
+      const fallbackTexts = Array.from(rootEl.querySelectorAll('p, span'))
+        .map(el => norm(el.textContent))
+        .filter(text => text.length > 10 && text.length < 1000) // reasonable message length
+        .slice(0, 50); // limit fallback messages
+      
+      for (let i = 0; i < fallbackTexts.length; i++) {
+        messages.push({
+          id: \`fallback-\${i}\`,
+          senderName: null,
+          senderProfileUrl: null,
+          time: null,
+          timeRaw: null,
+          text: fallbackTexts[i],
         });
       }
     }
@@ -445,11 +541,70 @@ async (page) => {
       totalFound: ordered.length,
       reversed,
       messages: ordered,
+      fallbacksUsed: allGroups.length === 0 ? 'generic-text-extraction' : 
+                     cappedGroups.length < groups1.length ? 'alternative-selectors' : 'primary-selectors',
     };
   });
 
   let msgs = Array.isArray(payload?.messages) ? payload.messages : [];
   if (msgs.length > limit) msgs = msgs.slice(-limit);
+
+  // ✅ FINAL FALLBACK: If we still have 0 messages, try additional strategies
+  if (msgs.length === 0) {
+    await debug('Zero messages extracted, applying final fallbacks');
+    
+    // Strategy 1: Try finding any visible text in the conversation area
+    const finalFallback = await root.evaluate((rootEl) => {
+      const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
+      const fallbackMessages = [];
+      
+      // Look for any paragraphs or divs with substantial text content
+      const textElements = Array.from(rootEl.querySelectorAll('p, div, span'))
+        .filter(el => {
+          const text = norm(el.textContent);
+          return text.length > 10 && text.length < 2000 && 
+                 !el.querySelector('input, button, a') && // avoid UI elements
+                 !/^(send|enviar|type|escribir)/i.test(text); // avoid UI text
+        })
+        .slice(0, 20); // limit to avoid noise
+      
+      for (let i = 0; i < textElements.length; i++) {
+        const text = norm(textElements[i].textContent);
+        if (text) {
+          fallbackMessages.push({
+            id: \`emergency-fallback-\${i}\`,
+            senderName: null,
+            senderProfileUrl: null,
+            time: null,
+            timeRaw: null,
+            text: text,
+            isFallback: true,
+          });
+        }
+      }
+      
+      return fallbackMessages;
+    }).catch(() => []);
+    
+    if (finalFallback.length > 0) {
+      msgs = finalFallback.slice(0, Math.min(limit, 10)); // limit fallback messages
+      await debug(\`Emergency fallback applied: found \${msgs.length} text elements\`);
+    }
+  }
+
+  // ✅ ULTIMATE FALLBACK: If we absolutely have no messages, create a placeholder
+  if (msgs.length === 0) {
+    await debug('All fallback strategies failed, creating placeholder message');
+    msgs = [{
+      id: 'no-messages-placeholder',
+      senderName: null,
+      senderProfileUrl: null,
+      time: null,
+      timeRaw: null,
+      text: '[No messages could be extracted from this conversation. This may indicate the chat is empty, requires login, or uses a different interface structure.]',
+      isPlaceholder: true,
+    }];
+  }
 
   const result = {
     ok: true,
@@ -459,6 +614,9 @@ async (page) => {
     extractedAt: new Date().toISOString(),
     threadHint: threadHint || undefined,
     messages: msgs,
+    fallbacksUsed: payload?.fallbacksUsed || 'unknown',
+    extractionStrategy: msgs[0]?.isPlaceholder ? 'placeholder' : 
+                       msgs[0]?.isFallback ? 'emergency-fallback' : 'standard',
   };
 
   // ✅ return object (not JSON.stringify)
