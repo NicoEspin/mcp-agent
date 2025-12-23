@@ -1618,7 +1618,102 @@ async (page) => {
                        msgs[0]?.isFallback ? 'emergency-fallback' : 'standard',
   };
 
-  // ✅ TEST: LinkedIn GraphQL API fetch in authenticated messaging context
+  // ✅ TESTING NEW WAYS: Capture all raw chat content for later processing
+  await debug('Capturing raw chat content like Ctrl+A, Ctrl+C, Ctrl+V...');
+  
+  let testing_new_ways = null;
+  try {
+    testing_new_ways = await root.evaluate((rootEl) => {
+      // Get all text content from the chat area - like selecting all and copying
+      const allTextContent = rootEl.textContent || '';
+      const allInnerText = rootEl.innerText || '';
+      const allInnerHTML = rootEl.innerHTML || '';
+      
+      // Get specific chat containers for different capture methods
+      const chatSelectors = [
+        '.msg-s-message-list',
+        '.msg-overlay-conversation-bubble__content-wrapper',
+        '.msg-conversation__body',
+        '.msg-thread',
+        '[data-view-name*="conversation"]',
+        '.msg-overlay-conversation-bubble',
+        '.conversation-wrapper'
+      ];
+      
+      const capturedContent = {};
+      
+      // Method 1: Raw text content (like Ctrl+A + Ctrl+C)
+      capturedContent.full_text_content = allTextContent.trim();
+      capturedContent.full_inner_text = allInnerText.trim();
+      
+      // Method 2: Capture content from each potential chat container
+      for (const selector of chatSelectors) {
+        const container = rootEl.querySelector(selector) || document.querySelector(selector);
+        if (container) {
+          const containerName = selector.replace(/[^a-zA-Z0-9]/g, '_');
+          capturedContent[`container_${containerName}`] = {
+            textContent: (container.textContent || '').trim(),
+            innerText: (container.innerText || '').trim(),
+            innerHTML_preview: (container.innerHTML || '').slice(0, 2000) // Preview only
+          };
+        }
+      }
+      
+      // Method 3: Get all visible text elements in order (like visual copy)
+      const allVisibleElements = Array.from(rootEl.querySelectorAll('*'))
+        .filter(el => {
+          const style = window.getComputedStyle(el);
+          return style.display !== 'none' && 
+                 style.visibility !== 'hidden' && 
+                 style.opacity !== '0' &&
+                 (el.textContent || '').trim().length > 0;
+        })
+        .map(el => ({
+          tagName: el.tagName,
+          className: el.className,
+          textContent: (el.textContent || '').trim(),
+          innerText: (el.innerText || '').trim()
+        }))
+        .filter(item => item.textContent.length > 0)
+        .slice(0, 500); // Limit to prevent too much data
+      
+      capturedContent.visible_elements = allVisibleElements;
+      
+      // Method 4: Simple line-by-line text like copy-paste would give
+      const lines = allInnerText.split('\n')
+        .map(line => line.trim())
+        .filter(line => line.length > 0);
+      
+      capturedContent.text_lines = lines;
+      
+      // Meta information
+      capturedContent.capture_meta = {
+        timestamp: new Date().toISOString(),
+        total_text_length: allTextContent.length,
+        total_inner_text_length: allInnerText.length,
+        total_lines: lines.length,
+        visible_elements_count: allVisibleElements.length,
+        root_element_tag: rootEl.tagName,
+        root_element_class: rootEl.className
+      };
+      
+      return capturedContent;
+    });
+    
+    await debug(`Raw content captured: ${JSON.stringify(testing_new_ways.capture_meta, null, 2)}`);
+  } catch (e) {
+    testing_new_ways = {
+      error: `Failed to capture raw content: ${e.message}`,
+      timestamp: new Date().toISOString()
+    };
+    await debug(`Raw content capture error: ${e.message}`);
+  }
+  
+  // Add testing_new_ways to the final result
+  result.testing_new_ways = testing_new_ways;
+
+  // ✅ COMMENTED OUT: LinkedIn GraphQL API test (not using for now)
+  /*
   await debug('Testing LinkedIn GraphQL API fetch in authenticated messaging context...');
   
   let graphqlTestResult = null;
@@ -1698,6 +1793,7 @@ async (page) => {
   
   // Add GraphQL test result to the final result
   result.graphqlTest = graphqlTestResult;
+  */
 
   // ✅ Wait for chat content to fully load before extraction
   await debug('Waiting for message content to load...');
