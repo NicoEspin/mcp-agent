@@ -955,42 +955,172 @@ async (page) => {
     }];
   }
 
-  // ✅ Add testing_new_ways object with raw chat content
+  // ✅ Add testing_new_ways object with enhanced chat content extraction
   const testing_new_ways = await root.evaluate((rootEl) => {
     try {
-      // Get all text content from the chat area (like Ctrl+A, Ctrl+C, Ctrl+V)
-      const allText = rootEl.innerText || rootEl.textContent || '';
+      const norm = (s) => (s ?? '').toString().replace(/\s+/g, ' ').trim();
       
-      // Also try to get HTML content in case we need it
-      const allHtml = rootEl.innerHTML || '';
+      // Helper functions for extracting structured data
+      const getSenderName = (group) => {
+        return norm(group.querySelector('.msg-s-message-group__name')?.textContent) ||
+               norm(group.querySelector('.msg-s-message-group__profile-link')?.textContent) ||
+               norm(group.querySelector('[data-anonymize="person-name"]')?.textContent) ||
+               norm(group.querySelector('a[data-test-app-aware-link] .msg-s-message-group__name')?.textContent) ||
+               norm(group.querySelector('a[data-test-app-aware-link]')?.textContent) ||
+               norm(group.querySelector('img[alt]')?.getAttribute('alt')) ||
+               norm(group.querySelector('img[title]')?.getAttribute('title'));
+      };
+
+      const getSenderUrl = (group) => {
+        const link = group.querySelector('a[href*="/in/"]');
+        if (link) {
+          const href = link.getAttribute('href');
+          if (href && href.includes('/in/')) {
+            return href.startsWith('/') ? 'https://www.linkedin.com' + href : href;
+          }
+        }
+        return null;
+      };
+
+      const getTimestamp = (group) => {
+        const timeEl = group.querySelector('time[datetime], time[data-time], .msg-s-message-group__timestamp, .timestamp');
+        if (timeEl) {
+          const datetime = timeEl.getAttribute('datetime') || timeEl.getAttribute('data-time');
+          if (datetime) return datetime;
+          
+          const text = norm(timeEl.textContent);
+          const timeMatch = text.match(/\b(\d{1,2}):(\d{2})\s*(AM|PM)?\b/i);
+          if (timeMatch) {
+            let hours = parseInt(timeMatch[1], 10);
+            const minutes = timeMatch[2];
+            const ampm = timeMatch[3]?.toUpperCase();
+            
+            if (ampm === 'PM' && hours < 12) hours += 12;
+            if (ampm === 'AM' && hours === 12) hours = 0;
+            
+            return `${String(hours).padStart(2, '0')}:${minutes}`;
+          }
+          return text;
+        }
+        return null;
+      };
+
+      // Get clean text content without CSS classes and styling
+      const getCleanText = (element) => {
+        if (!element) return '';
+        
+        // Clone the element to avoid modifying the original
+        const clone = element.cloneNode(true);
+        
+        // Remove all script and style elements
+        const scriptsAndStyles = clone.querySelectorAll('script, style');
+        scriptsAndStyles.forEach(el => el.remove());
+        
+        // Remove all class attributes and styling info
+        const allElements = clone.querySelectorAll('*');
+        allElements.forEach(el => {
+          el.removeAttribute('class');
+          el.removeAttribute('style');
+          el.removeAttribute('data-view-name');
+        });
+        
+        return norm(clone.textContent || clone.innerText || '');
+      };
+
+      // Extract structured conversation data
+      const conversationData = [];
+      const messageGroups = Array.from(rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group'));
       
+      for (const group of messageGroups) {
+        const senderName = getSenderName(group);
+        const senderUrl = getSenderUrl(group);
+        const timestamp = getTimestamp(group);
+        
+        // Get message text without HTML/CSS clutter
+        const messageText = getCleanText(group.querySelector('.msg-s-event-listitem__body, .message-body, p[data-test-id="message-text"]'));
+        
+        if (messageText) {
+          conversationData.push({
+            sender_name: senderName,
+            sender_profile_url: senderUrl,
+            timestamp: timestamp,
+            message_text: messageText,
+            raw_html: group.innerHTML?.substring(0, 1000) // Keep some HTML for reference but limit size
+          });
+        }
+      }
+
+      // Get clean text content from entire chat area (like Ctrl+A, Ctrl+C)
+      const cleanTextContent = getCleanText(rootEl);
+      
+      // Extract all visible dates and times from the chat
+      const dateTimeElements = Array.from(rootEl.querySelectorAll('time, .timestamp, [datetime]'));
+      const extractedTimes = dateTimeElements.map(el => ({
+        text: norm(el.textContent),
+        datetime: el.getAttribute('datetime') || el.getAttribute('data-time'),
+        raw_text: norm(el.outerHTML)
+      })).filter(item => item.text || item.datetime);
+
+      // Extract all profile links
+      const profileLinks = Array.from(rootEl.querySelectorAll('a[href*="/in/"]'))
+        .map(link => ({
+          url: link.href,
+          text: norm(link.textContent),
+          name: norm(link.querySelector('.msg-s-message-group__name, [data-anonymize="person-name"]')?.textContent)
+        }))
+        .filter(item => item.url);
+
       return {
-        raw_text_content: allText,
-        raw_html_content: allHtml.length > 50000 ? allHtml.substring(0, 50000) + '...[truncated]' : allHtml,
+        // Clean text content without CSS classes
+        clean_text_content: cleanTextContent,
+        
+        // Structured conversation data with dates, senders, URLs
+        conversation_data: conversationData,
+        
+        // Extracted timestamps
+        extracted_timestamps: extractedTimes,
+        
+        // Extracted profile URLs
+        extracted_profile_urls: profileLinks,
+        
+        // Metadata
         extraction_timestamp: new Date().toISOString(),
-        content_length: allText.length,
-        html_length: allHtml.length,
-        extraction_method: 'ctrl_a_ctrl_c_ctrl_v_simulation'
+        content_length: cleanTextContent.length,
+        message_groups_found: messageGroups.length,
+        conversations_extracted: conversationData.length,
+        timestamps_found: extractedTimes.length,
+        profile_urls_found: profileLinks.length,
+        extraction_method: 'enhanced_ctrl_a_ctrl_c_ctrl_v_with_structure'
       };
     } catch (e) {
       return {
-        raw_text_content: '',
-        raw_html_content: '',
+        clean_text_content: '',
+        conversation_data: [],
+        extracted_timestamps: [],
+        extracted_profile_urls: [],
         extraction_timestamp: new Date().toISOString(),
         content_length: 0,
-        html_length: 0,
-        extraction_method: 'ctrl_a_ctrl_c_ctrl_v_simulation',
+        message_groups_found: 0,
+        conversations_extracted: 0,
+        timestamps_found: 0,
+        profile_urls_found: 0,
+        extraction_method: 'enhanced_ctrl_a_ctrl_c_ctrl_v_with_structure',
         error: e.message
       };
     }
   }).catch(() => ({
-    raw_text_content: '',
-    raw_html_content: '',
+    clean_text_content: '',
+    conversation_data: [],
+    extracted_timestamps: [],
+    extracted_profile_urls: [],
     extraction_timestamp: new Date().toISOString(),
     content_length: 0,
-    html_length: 0,
-    extraction_method: 'ctrl_a_ctrl_c_ctrl_v_simulation',
-    error: 'Failed to extract raw content'
+    message_groups_found: 0,
+    conversations_extracted: 0,
+    timestamps_found: 0,
+    profile_urls_found: 0,
+    extraction_method: 'enhanced_ctrl_a_ctrl_c_ctrl_v_with_structure',
+    error: 'Failed to extract enhanced content'
   }));
 
   const result = {
