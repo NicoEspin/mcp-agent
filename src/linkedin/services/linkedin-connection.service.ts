@@ -821,31 +821,8 @@ async (page) => {
           await textarea.click();
           await page.waitForTimeout(1000 + Math.random() * 2000);
 
-          await textarea.fill('');
-          await page.waitForTimeout(2000 + Math.random() * 2000);
-
-          const chars = note.split('');
-          for (let i = 0; i < chars.length; i++) {
-            await textarea.type(chars[i]);
-
-            let delay = 150 + Math.random() * 250;
-
-            if (Math.random() < 0.2) {
-              delay += 1000 + Math.random() * 2000;
-            }
-
-            if (['.', ',', '!', '?'].includes(chars[i])) {
-              delay += 500 + Math.random() * 1000;
-            }
-
-            if (chars[i] === ' ') {
-              delay += 200 + Math.random() * 400;
-            }
-
-            await page.waitForTimeout(delay);
-          }
-
-          await page.waitForTimeout(7000 + Math.random() * 5000);
+          await textarea.fill(note);
+          await page.waitForTimeout(1000);
 
           await debug('Nota añadida: ' + note.slice(0, 50) + '...');
         } else {
