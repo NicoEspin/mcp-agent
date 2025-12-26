@@ -136,12 +136,12 @@ async (page) => {
   }
 
   // ✅ UPDATED: buildReadChatCode con ensureOnUrl (skip si ya está en la URL)
-private buildReadChatCode(
-  profileUrl: string,
-  limit: number,
-  threadHint?: string,
-) {
-  return `
+  private buildReadChatCode(
+    profileUrl: string,
+    limit: number,
+    threadHint?: string,
+  ) {
+    return `
 async (page) => {
   ${buildEnsureOnUrlSnippet()}
   const profileUrl = ${JSON.stringify(profileUrl)};
@@ -1655,21 +1655,40 @@ async (page) => {
     );
   } catch {}
 
-  // ✅ DEBUG: sample de mensajes (los últimos 8)
+  // ✅ DEBUG: dump de mensajes (TODOS)
   try {
     const all = Array.isArray(payload?.messages) ? payload.messages : [];
-    const sample = all.slice(Math.max(0, all.length - 8)).map((m) => ({
-      id: m?.id ?? null,
-      role: m?.role ?? null,
-      datetime: m?.datetime ?? null,
-      time: m?.time ?? null,
-      senderName: m?.senderName ?? null,
-      senderProfileUrl: m?.senderProfileUrl ?? null,
-      textPreview: (m?.text ?? '').toString().slice(0, 140),
-      extractionStrategy: m?.extractionStrategy ?? null,
-    }));
+    await debug('Messages dump(all) -> ' + JSON.stringify({ count: all.length }, null, 2).slice(0, 800));
 
-    await debug('Messages sample(last 8) -> ' + JSON.stringify({ count: all.length, sample }, null, 2).slice(0, 2200));
+    const maxChunk = 900;
+
+    for (let i = 0; i < all.length; i++) {
+      const m = all[i] || {};
+      const meta = {
+        index: i,
+        id: m?.id ?? null,
+        role: m?.role ?? null,
+        datetime: m?.datetime ?? null,
+        time: m?.time ?? null,
+        senderName: m?.senderName ?? null,
+        senderProfileUrl: m?.senderProfileUrl ?? null,
+        extractionStrategy: m?.extractionStrategy ?? null,
+      };
+
+      await debug('Message[' + i + '] meta -> ' + JSON.stringify(meta, null, 2).slice(0, 1800));
+
+      const txt = (m?.text ?? '').toString();
+      if (!txt) {
+        await debug('Message[' + i + '] text(0/0) -> ');
+        continue;
+      }
+
+      const totalParts = Math.max(1, Math.ceil(txt.length / maxChunk));
+      for (let p = 0; p < totalParts; p++) {
+        const part = txt.slice(p * maxChunk, (p + 1) * maxChunk);
+        await debug('Message[' + i + '] text(' + (p + 1) + '/' + totalParts + ') -> ' + part);
+      }
+    }
   } catch {}
 
   let msgs = Array.isArray(payload?.messages) ? payload.messages : [];
@@ -2050,8 +2069,7 @@ async (page) => {
   return result;
 }
 `;
-}
-
+  }
 
   // -----------------------------
   // ✅ UPDATED: readChat multi-sesión (safe parse + correct logs)

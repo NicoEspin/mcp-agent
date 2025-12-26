@@ -517,18 +517,45 @@ async (page) => {
 
       // 3) OpenAI Vision: clasificar 3 estados
       const prompt = `
-Analizá esta captura de LinkedIn (perfil con el menú de "Más / Más acciones" abierto).
+Analizá esta captura de LinkedIn (perfil) donde puede verse el menú de "Más / Más acciones" y/o el módulo de conexión ("Conecta si os conocéis").
 
-Objetivo:
-Determinar el estado de conexión ENTRE el usuario LOGUEADO y el perfil.
+Objetivo: determinar el estado de conexión ENTRE el usuario LOGUEADO y este perfil.
 
-Tenés que clasificar en uno de estos estados:
-- "connected": ya están conectados (ej: aparece "Eliminar conexión" / "Remove connection" o señales claras de conexión).
-- "pending": hay solicitud enviada pendiente (ej: "Pendiente" / "Pending" / "Invitación enviada" / "Withdraw invitation" / "Retirar invitación").
-- "not_connected": NO están conectados (ej: aparece "Conectar" / "Connect" / "Enviar conexión" / "Send invitation").
-- "unknown": no se puede determinar con confianza (login/captcha/imagen incompleta).
+⚠️ MUY IMPORTANTE:
+- IGNORÁ señales no confiables como: "Enviar mensaje", "Seguir/Following", "Ir a mi sitio web", "Guardar en PDF", "Denunciar/bloquear", "Acerca de este perfil".
+- La decisión debe basarse SOLO en señales de CONEXIÓN (botón Conectar/Pendiente o acciones de conexión en el menú).
 
-Reglas de salida:
+Estados válidos:
+- "pending": existe invitación/solicitud enviada pendiente.
+- "connected": ya están conectados (1er grado) o aparece acción de eliminar/quitar conexión.
+- "not_connected": no están conectados y aparece opción de conectar/invitar.
+- "unknown": no se ve ninguna señal clara (imagen incompleta, login/captcha, menú no visible).
+
+Reglas de decisión (prioridad estricta):
+1) Si ves cualquiera de estas señales => status="pending"
+   Señales fuertes (ES/EN):
+   - Botón: "Pendiente", "Pending"
+   - Menú: "Retirar invitación", "Retirar la invitación", "Withdraw invitation", "Cancelar invitación", "Cancel invitation", "Cancel request"
+   - Textos: "Invitación enviada", "Invitation sent", "Invited"
+
+2) Si NO es pending, y ves cualquiera de estas señales => status="connected"
+   Señales fuertes (ES/EN):
+   - Menú: "Eliminar contacto", "Eliminar conexión", "Quitar conexión", "Remove connection", "Remove contact", "Remove from my network", "Disconnect"
+   - Cualquier variante clara de “quitar/eliminar conexión”
+
+3) Si NO es pending ni connected, y ves cualquiera de estas señales => status="not_connected"
+   Señales fuertes (ES/EN):
+   - Botón: "Conectar", "Connect"
+   - Menú: "Conectar", "Connect", "Invitar", "Invite", "Enviar invitación", "Send invitation", "Enviar conexión", "Add to network"
+
+4) Si no aparece NINGUNA señal anterior con claridad => status="unknown"
+
+Confianza:
+- 0.9–1.0 si encontrás una señal fuerte explícita (palabra exacta o muy cercana).
+- 0.6–0.85 si se entiende pero está parcialmente cortado/borroso.
+- <0.6 si hay dudas.
+
+Salida:
 Respondé SOLO con JSON válido (sin markdown, sin texto extra) con este formato exacto:
 {
   "status": "connected" | "pending" | "not_connected" | "unknown",
@@ -536,9 +563,7 @@ Respondé SOLO con JSON válido (sin markdown, sin texto extra) con este formato
   "signals": string[]
 }
 
-Notas:
-- "confidence" entre 0 y 1.
-- "signals" son pistas textuales visibles (palabras como "Conectar", "Pendiente", "Eliminar conexión", etc).
+En "signals" incluí las palabras/frases EXACTAS que viste y usaste para decidir (ej: ["Eliminar contacto"], ["Conectar"], ["Pendiente"], ["Retirar invitación"]).
 `.trim();
 
       verboseResult.executionDetails.openaiDetails.prompt = prompt;
@@ -552,7 +577,7 @@ Notas:
           {
             role: 'system',
             content:
-              'Sos un clasificador estricto de UI. Respondés únicamente JSON válido con el formato solicitado.',
+              'Sos un clasificador estricto de UI. Seguís reglas de prioridad. Respondés únicamente JSON válido con el formato solicitado.',
           },
           {
             role: 'user',
@@ -629,73 +654,80 @@ Notas:
   // ----------------------------
   // sendConnection multi-sesión
   // ----------------------------
-async sendConnection(
-  sessionId: SessionId,
-  profileUrl: string,
-  note?: string,
-) {
-  const startTime = Date.now();
+  async sendConnection(
+    sessionId: SessionId,
+    profileUrl: string,
+    note?: string,
+  ) {
+    const startTime = Date.now();
 
-  const verboseResult = {
-    ok: true,
-    profileUrl,
-    notePreview: (note ?? '').slice(0, 80),
-    noteLength: note?.length ?? 0,
-    sessionId,
-    executionDetails: {
-      startTime,
-      endTime: null as number | null,
-      executionTimeMs: null as number | null,
-      method: 'playwright_execution_with_fallbacks',
-      fallbackAttempts: 0,
-      methodsAttempted: [] as string[],
-      steps: [] as string[],
-      errors: [] as any[],
-      playwrightDetails: {
-        codeLength: null as number | null,
-        humanLikeDelays: true,
-        selectors: [] as string[],
+    const verboseResult = {
+      ok: true,
+      profileUrl,
+      notePreview: (note ?? '').slice(0, 80),
+      noteLength: note?.length ?? 0,
+      sessionId,
+      executionDetails: {
+        startTime,
+        endTime: null as number | null,
+        executionTimeMs: null as number | null,
+        method: 'playwright_execution_with_fallbacks',
+        fallbackAttempts: 0,
+        methodsAttempted: [] as string[],
+        steps: [] as string[],
+        errors: [] as any[],
+        playwrightDetails: {
+          codeLength: null as number | null,
+          humanLikeDelays: true,
+          selectors: [] as string[],
+        },
       },
-    },
-    note: null as string | null,
-    toolResult: null as any,
-  };
+      note: null as string | null,
+      toolResult: null as any,
+    };
 
-  try {
-    verboseResult.executionDetails.steps.push('Starting sendConnection process');
+    try {
+      verboseResult.executionDetails.steps.push(
+        'Starting sendConnection process',
+      );
 
-    // Check LinkedIn authentication status before proceeding
-    verboseResult.executionDetails.steps.push('Checking LinkedIn authentication status');
-    const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
-    if (!isAuthenticated) {
-      verboseResult.executionDetails.steps.push('User not authenticated - returning error');
+      // Check LinkedIn authentication status before proceeding
+      verboseResult.executionDetails.steps.push(
+        'Checking LinkedIn authentication status',
+      );
+      const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
+      if (!isAuthenticated) {
+        verboseResult.executionDetails.steps.push(
+          'User not authenticated - returning error',
+        );
 
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.executionDetails.errors.push({
-        message: 'User not logged into LinkedIn',
-        timestamp: endTime,
-      });
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.executionDetails.errors.push({
+          message: 'User not logged into LinkedIn',
+          timestamp: endTime,
+        });
 
-      return {
-        ok: false,
-        error: 'User not logged into LinkedIn',
-        detail: 'Please login to LinkedIn first before attempting to send connections',
-        executionDetails: verboseResult.executionDetails,
-        profileUrl,
-        sessionId,
-      };
-    }
+        return {
+          ok: false,
+          error: 'User not logged into LinkedIn',
+          detail:
+            'Please login to LinkedIn first before attempting to send connections',
+          executionDetails: verboseResult.executionDetails,
+          profileUrl,
+          sessionId,
+        };
+      }
 
-    verboseResult.executionDetails.steps.push(
-      'User authenticated, building Playwright execution code',
-    );
+      verboseResult.executionDetails.steps.push(
+        'User authenticated, building Playwright execution code',
+      );
 
-    // Direct Playwright execution
+      // Direct Playwright execution
 
-    // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
-    const code = `
+      // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
+      const code = `
 async (page) => {
   ${buildEnsureOnUrlSnippet()}
 
@@ -1181,74 +1213,102 @@ async (page) => {
 }
 `;
 
-    try {
-      verboseResult.executionDetails.playwrightDetails.codeLength = code.length;
-      verboseResult.executionDetails.steps.push(
-        `Generated Playwright code: ${code.length} characters`,
-      );
-      verboseResult.executionDetails.steps.push(
-        'Executing Playwright code with human-like behavior',
-      );
+      try {
+        verboseResult.executionDetails.playwrightDetails.codeLength =
+          code.length;
+        verboseResult.executionDetails.steps.push(
+          `Generated Playwright code: ${code.length} characters`,
+        );
+        verboseResult.executionDetails.steps.push(
+          'Executing Playwright code with human-like behavior',
+        );
 
-      const result = await this.playwright.runCode(code, sessionId);
+        const result = await this.playwright.runCode(code, sessionId);
 
-      const endTime = Date.now();
-      verboseResult.executionDetails.endTime = endTime;
-      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-      verboseResult.executionDetails.steps.push('Playwright execution completed');
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+        verboseResult.executionDetails.steps.push(
+          'Playwright execution completed',
+        );
 
-      this.logger.debug(
-        'browser_run_code result (sendConnection popover): ' +
-          JSON.stringify(result, null, 2),
-      );
+        this.logger.debug(
+          'browser_run_code result (sendConnection popover): ' +
+            JSON.stringify(result, null, 2),
+        );
 
-      if (result?.isError) {
+        if (result?.isError) {
+          verboseResult.executionDetails.errors.push({
+            message: 'Playwright MCP error',
+            detail: result?.content ?? result,
+            timestamp: endTime,
+          });
+          verboseResult.executionDetails.steps.push(
+            `Error in Playwright execution: ${result?.content ?? result}`,
+          );
+
+          return {
+            ok: false,
+            error: 'Playwright MCP error en browser_run_code',
+            detail: result?.content ?? result,
+            executionDetails: verboseResult.executionDetails,
+            profileUrl,
+            sessionId,
+          };
+        }
+
+        // Track which method was used
+        const connectionMethod = result?.viaDirect
+          ? 'botón directo "Conectar"'
+          : 'dropdown "Más acciones"';
+        const selectorInfo = result?.selector
+          ? ` (selector: ${result.selector})`
+          : '';
+
+        verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
+        verboseResult.executionDetails.steps.push(
+          `Connection sent via: ${connectionMethod}${selectorInfo}`,
+        );
+
+        if (result?.viaDirect) {
+          verboseResult.executionDetails.playwrightDetails.selectors.push(
+            result.selector || 'unknown',
+          );
+        }
+
+        if (result?.noteAdded) {
+          verboseResult.executionDetails.steps.push(
+            `Custom note added: ${note?.slice(0, 50)}...`,
+          );
+        }
+
+        verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
+        verboseResult.toolResult = result;
+
+        return verboseResult;
+      } catch (e: any) {
+        const endTime = Date.now();
+        verboseResult.executionDetails.endTime = endTime;
+        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
         verboseResult.executionDetails.errors.push({
-          message: 'Playwright MCP error',
-          detail: result?.content ?? result,
+          message: e?.message ?? 'Unknown error',
+          stack: e?.stack,
           timestamp: endTime,
         });
         verboseResult.executionDetails.steps.push(
-          `Error in Playwright execution: ${result?.content ?? result}`,
+          `Error occurred: ${e?.message ?? 'Unknown error'}`,
         );
+
+        this.logger.warn(`sendConnection (popover) failed: ${e?.message ?? e}`);
 
         return {
           ok: false,
-          error: 'Playwright MCP error en browser_run_code',
-          detail: result?.content ?? result,
+          error: e?.message ?? 'Unknown error',
           executionDetails: verboseResult.executionDetails,
           profileUrl,
           sessionId,
         };
       }
-
-      // Track which method was used
-      const connectionMethod = result?.viaDirect
-        ? 'botón directo "Conectar"'
-        : 'dropdown "Más acciones"';
-      const selectorInfo = result?.selector ? ` (selector: ${result.selector})` : '';
-
-      verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
-      verboseResult.executionDetails.steps.push(
-        `Connection sent via: ${connectionMethod}${selectorInfo}`,
-      );
-
-      if (result?.viaDirect) {
-        verboseResult.executionDetails.playwrightDetails.selectors.push(
-          result.selector || 'unknown',
-        );
-      }
-
-      if (result?.noteAdded) {
-        verboseResult.executionDetails.steps.push(
-          `Custom note added: ${note?.slice(0, 50)}...`,
-        );
-      }
-
-      verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
-      verboseResult.toolResult = result;
-
-      return verboseResult;
     } catch (e: any) {
       const endTime = Date.now();
       verboseResult.executionDetails.endTime = endTime;
@@ -1259,10 +1319,10 @@ async (page) => {
         timestamp: endTime,
       });
       verboseResult.executionDetails.steps.push(
-        `Error occurred: ${e?.message ?? 'Unknown error'}`,
+        `Outer error: ${e?.message ?? 'Unknown error'}`,
       );
 
-      this.logger.warn(`sendConnection (popover) failed: ${e?.message ?? e}`);
+      this.logger.warn(`sendConnection failed: ${e?.message ?? e}`);
 
       return {
         ok: false,
@@ -1272,27 +1332,5 @@ async (page) => {
         sessionId,
       };
     }
-  } catch (e: any) {
-    const endTime = Date.now();
-    verboseResult.executionDetails.endTime = endTime;
-    verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-    verboseResult.executionDetails.errors.push({
-      message: e?.message ?? 'Unknown error',
-      stack: e?.stack,
-      timestamp: endTime,
-    });
-    verboseResult.executionDetails.steps.push(`Outer error: ${e?.message ?? 'Unknown error'}`);
-
-    this.logger.warn(`sendConnection failed: ${e?.message ?? e}`);
-
-    return {
-      ok: false,
-      error: e?.message ?? 'Unknown error',
-      executionDetails: verboseResult.executionDetails,
-      profileUrl,
-      sessionId,
-    };
   }
-}
-
 }
