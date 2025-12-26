@@ -332,6 +332,11 @@
                 <input id="profileUrl" placeholder="https://www.linkedin.com/in/..." />
             </div>
 
+            <div style="margin-top: 10px">
+                <label>note (opcional)</label>
+                <textarea id="connNote" placeholder="Dejá vacío para enviar SIN nota"></textarea>
+            </div>
+
             <div class="grid" style="margin-top: 10px">
                 <div>
                     <label>limit</label>
@@ -345,6 +350,7 @@
 
             <div class="row" style="margin-top: 10px">
                 <button class="btn primary" id="btnReadChat">POST /linkedin/read-chat</button>
+                <button class="btn primary" id="btnSendConnection">POST /linkedin/send-connection</button>
                 <button class="btn" id="btnCopyJson">Copiar JSON</button>
                 <button class="btn danger" id="btnClear">Limpiar</button>
             </div>
@@ -401,6 +407,7 @@
         const httpDot = $("httpDot");
         const httpStatus = $("httpStatus");
         const lastFrame = $("lastFrame");
+
 
         let socket = null;
         let lastImageTs = 0;
@@ -469,6 +476,18 @@
             }
         }
 
+        function setConnHttpState(state, extra) {
+            if (state === "ok") {
+                connDot.className = "dot good";
+                connStatus.textContent = "HTTP: ok" + (extra ? ` (${extra})` : "");
+            } else if (state === "error") {
+                connDot.className = "dot bad";
+                connStatus.textContent = "HTTP: error" + (extra ? ` (${extra})` : "");
+            } else {
+                connDot.className = "dot";
+                connStatus.textContent = "HTTP: idle";
+            }
+        }
         function getConfig() {
             const baseUrlRaw = $("baseUrl").value.trim() || "http://localhost:3001";
             const apiPrefixRaw = $("apiPrefix").value.trim() || "/api/zion";
@@ -788,6 +807,45 @@
                 appendLog("read-chat error", { message: e.message, payload: e.payload || null });
             }
         }
+  async function postSendConnection() {
+  const { baseUrl, apiPrefix, sessionId } = getConfig();
+
+  // ✅ reuse the existing input
+  const profileUrl = $("profileUrl").value.trim();
+  const noteRaw = $("connNote").value;
+
+  const url = `${baseUrl}${apiPrefix}/linkedin/send-connection`;
+
+  if (!profileUrl) {
+    setHttpState("error", "profileUrl requerido");
+    outEl.textContent = safeJson({ error: "profileUrl requerido" });
+    return;
+  }
+
+  const body = { sessionId, profileUrl };
+  // ✅ Only include note if non-empty to truly test “without note”
+  if (noteRaw && noteRaw.trim()) body.note = noteRaw.trim();
+
+  setHttpState("ok", "send-connection...");
+  appendLog("POST /linkedin/send-connection", { url, body });
+
+  try {
+    const data = await fetchJson(url, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+
+    setHttpState("ok", "send-connection ok");
+    outEl.textContent = safeJson(data);
+    appendLog("send-connection response", data);
+  } catch (e) {
+    setHttpState("error", e.message);
+    outEl.textContent = safeJson({ error: e.message, payload: e.payload || null });
+    appendLog("send-connection error", { message: e.message, payload: e.payload || null });
+  }
+}
+
+
 
         function cmdReload() {
             emitInput({ type: "cmd", command: "reload" });
@@ -808,6 +866,9 @@
         $("btnListTabs").addEventListener("click", () => cmdListTabs());
 
         $("btnReadChat").addEventListener("click", () => postReadChat());
+        $("btnSendConnection").addEventListener("click", () => postSendConnection());
+
+
 
         $("btnClear").addEventListener("click", () => {
             outEl.textContent = "{}";

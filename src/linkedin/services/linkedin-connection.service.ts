@@ -629,80 +629,73 @@ Notas:
   // ----------------------------
   // sendConnection multi-sesión
   // ----------------------------
-  async sendConnection(
-    sessionId: SessionId,
-    profileUrl: string,
-    note?: string,
-  ) {
-    const startTime = Date.now();
+async sendConnection(
+  sessionId: SessionId,
+  profileUrl: string,
+  note?: string,
+) {
+  const startTime = Date.now();
 
-    const verboseResult = {
-      ok: true,
-      profileUrl,
-      notePreview: (note ?? '').slice(0, 80),
-      noteLength: note?.length ?? 0,
-      sessionId,
-      executionDetails: {
-        startTime,
-        endTime: null as number | null,
-        executionTimeMs: null as number | null,
-        method: 'playwright_execution_with_fallbacks',
-        fallbackAttempts: 0,
-        methodsAttempted: [] as string[],
-        steps: [] as string[],
-        errors: [] as any[],
-        playwrightDetails: {
-          codeLength: null as number | null,
-          humanLikeDelays: true,
-          selectors: [] as string[],
-        },
+  const verboseResult = {
+    ok: true,
+    profileUrl,
+    notePreview: (note ?? '').slice(0, 80),
+    noteLength: note?.length ?? 0,
+    sessionId,
+    executionDetails: {
+      startTime,
+      endTime: null as number | null,
+      executionTimeMs: null as number | null,
+      method: 'playwright_execution_with_fallbacks',
+      fallbackAttempts: 0,
+      methodsAttempted: [] as string[],
+      steps: [] as string[],
+      errors: [] as any[],
+      playwrightDetails: {
+        codeLength: null as number | null,
+        humanLikeDelays: true,
+        selectors: [] as string[],
       },
-      note: null as string | null,
-      toolResult: null as any,
-    };
+    },
+    note: null as string | null,
+    toolResult: null as any,
+  };
 
-    try {
-      verboseResult.executionDetails.steps.push(
-        'Starting sendConnection process',
-      );
+  try {
+    verboseResult.executionDetails.steps.push('Starting sendConnection process');
 
-      // Check LinkedIn authentication status before proceeding
-      verboseResult.executionDetails.steps.push(
-        'Checking LinkedIn authentication status',
-      );
-      const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
-      if (!isAuthenticated) {
-        verboseResult.executionDetails.steps.push(
-          'User not authenticated - returning error',
-        );
+    // Check LinkedIn authentication status before proceeding
+    verboseResult.executionDetails.steps.push('Checking LinkedIn authentication status');
+    const isAuthenticated = await this.checkAndLogLinkedInAuth(sessionId);
+    if (!isAuthenticated) {
+      verboseResult.executionDetails.steps.push('User not authenticated - returning error');
 
-        const endTime = Date.now();
-        verboseResult.executionDetails.endTime = endTime;
-        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-        verboseResult.executionDetails.errors.push({
-          message: 'User not logged into LinkedIn',
-          timestamp: endTime,
-        });
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.errors.push({
+        message: 'User not logged into LinkedIn',
+        timestamp: endTime,
+      });
 
-        return {
-          ok: false,
-          error: 'User not logged into LinkedIn',
-          detail:
-            'Please login to LinkedIn first before attempting to send connections',
-          executionDetails: verboseResult.executionDetails,
-          profileUrl,
-          sessionId,
-        };
-      }
+      return {
+        ok: false,
+        error: 'User not logged into LinkedIn',
+        detail: 'Please login to LinkedIn first before attempting to send connections',
+        executionDetails: verboseResult.executionDetails,
+        profileUrl,
+        sessionId,
+      };
+    }
 
-      verboseResult.executionDetails.steps.push(
-        'User authenticated, building Playwright execution code',
-      );
+    verboseResult.executionDetails.steps.push(
+      'User authenticated, building Playwright execution code',
+    );
 
-      // Direct Playwright execution
+    // Direct Playwright execution
 
-      // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
-      const code = `
+    // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
+    const code = `
 async (page) => {
   ${buildEnsureOnUrlSnippet()}
 
@@ -834,48 +827,185 @@ async (page) => {
 
       await page.waitForTimeout(7000 + Math.random() * 5000);
 
+      const hasNote = !!(note && note.trim());
+
+      const waitUntilEnabled = async (loc, timeoutMs = 12000) => {
+        const t0 = Date.now();
+        while (Date.now() - t0 < timeoutMs) {
+          const vis = await loc.isVisible().catch(() => false);
+          if (!vis) {
+            await page.waitForTimeout(250);
+            continue;
+          }
+          const en = await loc.isEnabled().catch(() => false);
+          if (en) return true;
+          await page.waitForTimeout(250);
+        }
+        return false;
+      };
+
+      const robustClick = async (loc, label) => {
+        await debug('Intentando click: ' + label);
+        await loc.scrollIntoViewIfNeeded().catch(() => {});
+        await page.waitForTimeout(600 + Math.random() * 700);
+        await loc.hover().catch(() => {});
+        await page.waitForTimeout(500 + Math.random() * 700);
+
+        // 1) normal click
+        try {
+          await loc.click({ timeout: 5000 });
+          return true;
+        } catch {}
+
+        // 2) force click
+        try {
+          await loc.click({ timeout: 5000, force: true });
+          return true;
+        } catch {}
+
+        // 3) DOM click fallback
+        try {
+          await loc.evaluate((el) => el && (el).click && (el).click());
+          return true;
+        } catch {}
+
+        return false;
+      };
+
+      const findFirstClickableInScopes = async (scopes, selectors, roleNameRegex) => {
+        // A) getByRole is usually the most stable
+        if (roleNameRegex) {
+          for (const scope of scopes) {
+            try {
+              const byRole = scope.getByRole('button', { name: roleNameRegex }).first();
+              const okEnabled = await waitUntilEnabled(byRole, 9000);
+              if (okEnabled) return { loc: byRole, how: 'getByRole(' + roleNameRegex + ')' };
+            } catch {}
+          }
+        }
+
+        // B) selector fallbacks
+        for (const sel of selectors) {
+          for (const scope of scopes) {
+            try {
+              const candidate = scope.locator(sel).first();
+              const okEnabled = await waitUntilEnabled(candidate, 7000);
+              if (okEnabled) return { loc: candidate, how: sel };
+            } catch {}
+          }
+        }
+
+        return { loc: null, how: '' };
+      };
+
+      // We try inside modal first, then page as fallback (some UIs mount footer buttons outside the dialog node)
+      const scopes = [modal, page];
+
+      // ✅ Case 1: NO NOTE => must click "Enviar sin nota"
+      if (!hasNote) {
+        await debug('Caso SIN nota: buscando botón "Enviar sin nota"');
+
+        const sendWithoutNoteSelectors = [
+          // exact / aria-label
+          'button[aria-label="Enviar sin nota"]',
+          'button[aria-label*="enviar sin nota" i]',
+          'button[aria-label*="sin nota" i]',
+
+          // text-based
+          'button:has-text("Enviar sin nota")',
+          'button:has(span.artdeco-button__text:has-text("Enviar sin nota"))',
+          'button.artdeco-button--primary:has-text("Enviar sin nota")',
+          'button.artdeco-button--primary:has(span.artdeco-button__text:has-text("Enviar sin nota"))',
+
+          // English fallbacks (in case account/UI is EN)
+          'button[aria-label*="send without" i]',
+          'button:has-text("Send without a note")',
+          'button:has-text("Send without note")',
+          'button:has-text("Send without a message")',
+
+          // generic but safer-ish (last resort inside this branch)
+          'button[data-control-name*="send" i]',
+        ];
+
+        const found = await findFirstClickableInScopes(
+          scopes,
+          sendWithoutNoteSelectors,
+          /enviar sin nota/i
+        );
+
+        if (found.loc) {
+          await debug('Botón "Enviar sin nota" encontrado vía: ' + found.how);
+
+          await page.waitForTimeout(1200 + Math.random() * 1200);
+
+          const clicked = await robustClick(found.loc, 'Enviar sin nota (' + found.how + ')');
+          if (clicked) {
+            await page.waitForTimeout(7000 + Math.random() * 5000);
+            await debug('Conexión enviada (sin nota)');
+            return true;
+          }
+
+          await debug('Falló el click en "Enviar sin nota", intentando fallback general...');
+        } else {
+          await debug('No se encontró "Enviar sin nota" con fallbacks, intentando fallback general...');
+        }
+      }
+
+      // ✅ Case 2: WITH NOTE (or fallback if no-note path failed) => click "Enviar"/"Send"
+      await debug('Buscando botón de envío estándar ("Enviar"/"Send")');
+
       const sendButtonSelectors = [
+        // Prefer exact-ish "Enviar" first
+        'button[aria-label="Enviar"]',
+        'button[aria-label*="send invite" i]',
+        'button[data-control-name="send_invite"]',
+
+        // Text-based
         'button:has(span.artdeco-button__text:text("Enviar"))',
         'button:has-text("Enviar")',
-        'button[aria-label*="Send" i]',
-        'button[aria-label*="Enviar" i]',
-        'button[data-control-name="send_invite"]',
-        'button[type="submit"]',
-        'button.artdeco-button--primary',
         'button:has-text("Send")',
         'button:has-text("Send invitation")',
         'button:has-text("Enviar invitación")',
+
+        // Generic fallbacks (keep them late)
+        'button[type="submit"]',
+        'button.artdeco-button--primary',
+        'button[aria-label*="Send" i]',
+        'button[aria-label*="Enviar" i]',
         '.artdeco-button--primary:has-text("Enviar")'
       ];
 
       let sendButton = null;
-      for (const selector of sendButtonSelectors) {
-        const btnEl = modal.locator(selector).first();
-        const isVisible = await btnEl.isVisible().catch(() => false);
-        const isEnabled = isVisible ? await btnEl.isEnabled().catch(() => false) : false;
-        if (isVisible && isEnabled) {
-          sendButton = btnEl;
-          await debug('Botón de envío encontrado: ' + selector);
-          break;
-        }
+      let sendHow = '';
+
+      const foundStandard = await findFirstClickableInScopes(
+        scopes,
+        sendButtonSelectors,
+        /^(enviar|send)$/i
+      );
+
+      if (foundStandard.loc) {
+        sendButton = foundStandard.loc;
+        sendHow = foundStandard.how;
       }
 
       if (sendButton) {
+        await debug('Botón de envío encontrado: ' + sendHow);
+
         await debug('Preparando envío de conexión');
 
         await page.waitForTimeout(8000 + Math.random() * 7000);
 
-        await sendButton.hover();
-        await page.waitForTimeout(2000 + Math.random() * 3000);
+        const clicked = await robustClick(sendButton, 'Send standard (' + sendHow + ')');
+        if (clicked) {
+          await page.waitForTimeout(7000 + Math.random() * 5000);
 
-        await page.waitForTimeout(3000 + Math.random() * 4000);
+          await debug('Conexión enviada con modal completado');
+          return true;
+        }
 
-        await sendButton.click({ timeout: 5000 });
-
-        await page.waitForTimeout(7000 + Math.random() * 5000);
-
-        await debug('Conexión enviada con modal completado');
-        return true;
+        await debug('No se pudo clickear el botón de envío estándar');
+        return false;
       } else {
         await debug('No se encontró botón de envío válido');
         // Try to close modal and proceed
@@ -883,7 +1013,7 @@ async (page) => {
         const closeBtn = closeButtons.first();
         const closeVisible = await closeBtn.isVisible().catch(() => false);
         if (closeVisible) {
-          await closeBtn.click();
+          await closeBtn.click().catch(() => {});
         }
         return false;
       }
@@ -1051,102 +1181,74 @@ async (page) => {
 }
 `;
 
-      try {
-        verboseResult.executionDetails.playwrightDetails.codeLength =
-          code.length;
-        verboseResult.executionDetails.steps.push(
-          `Generated Playwright code: ${code.length} characters`,
-        );
-        verboseResult.executionDetails.steps.push(
-          'Executing Playwright code with human-like behavior',
-        );
+    try {
+      verboseResult.executionDetails.playwrightDetails.codeLength = code.length;
+      verboseResult.executionDetails.steps.push(
+        `Generated Playwright code: ${code.length} characters`,
+      );
+      verboseResult.executionDetails.steps.push(
+        'Executing Playwright code with human-like behavior',
+      );
 
-        const result = await this.playwright.runCode(code, sessionId);
+      const result = await this.playwright.runCode(code, sessionId);
 
-        const endTime = Date.now();
-        verboseResult.executionDetails.endTime = endTime;
-        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
-        verboseResult.executionDetails.steps.push(
-          'Playwright execution completed',
-        );
+      const endTime = Date.now();
+      verboseResult.executionDetails.endTime = endTime;
+      verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      verboseResult.executionDetails.steps.push('Playwright execution completed');
 
-        this.logger.debug(
-          'browser_run_code result (sendConnection popover): ' +
-            JSON.stringify(result, null, 2),
-        );
+      this.logger.debug(
+        'browser_run_code result (sendConnection popover): ' +
+          JSON.stringify(result, null, 2),
+      );
 
-        if (result?.isError) {
-          verboseResult.executionDetails.errors.push({
-            message: 'Playwright MCP error',
-            detail: result?.content ?? result,
-            timestamp: endTime,
-          });
-          verboseResult.executionDetails.steps.push(
-            `Error in Playwright execution: ${result?.content ?? result}`,
-          );
-
-          return {
-            ok: false,
-            error: 'Playwright MCP error en browser_run_code',
-            detail: result?.content ?? result,
-            executionDetails: verboseResult.executionDetails,
-            profileUrl,
-            sessionId,
-          };
-        }
-
-        // Track which method was used
-        const connectionMethod = result?.viaDirect
-          ? 'botón directo "Conectar"'
-          : 'dropdown "Más acciones"';
-        const selectorInfo = result?.selector
-          ? ` (selector: ${result.selector})`
-          : '';
-
-        verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
-        verboseResult.executionDetails.steps.push(
-          `Connection sent via: ${connectionMethod}${selectorInfo}`,
-        );
-
-        if (result?.viaDirect) {
-          verboseResult.executionDetails.playwrightDetails.selectors.push(
-            result.selector || 'unknown',
-          );
-        }
-
-        if (result?.noteAdded) {
-          verboseResult.executionDetails.steps.push(
-            `Custom note added: ${note?.slice(0, 50)}...`,
-          );
-        }
-
-        verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
-        verboseResult.toolResult = result;
-
-        return verboseResult;
-      } catch (e: any) {
-        const endTime = Date.now();
-        verboseResult.executionDetails.endTime = endTime;
-        verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+      if (result?.isError) {
         verboseResult.executionDetails.errors.push({
-          message: e?.message ?? 'Unknown error',
-          stack: e?.stack,
+          message: 'Playwright MCP error',
+          detail: result?.content ?? result,
           timestamp: endTime,
         });
         verboseResult.executionDetails.steps.push(
-          `Error occurred: ${e?.message ?? 'Unknown error'}`,
+          `Error in Playwright execution: ${result?.content ?? result}`,
         );
-
-        this.logger.warn(`sendConnection (popover) failed: ${e?.message ?? e}`);
 
         return {
           ok: false,
-          error: e?.message ?? 'Unknown error',
+          error: 'Playwright MCP error en browser_run_code',
+          detail: result?.content ?? result,
           executionDetails: verboseResult.executionDetails,
           profileUrl,
           sessionId,
         };
       }
+
+      // Track which method was used
+      const connectionMethod = result?.viaDirect
+        ? 'botón directo "Conectar"'
+        : 'dropdown "Más acciones"';
+      const selectorInfo = result?.selector ? ` (selector: ${result.selector})` : '';
+
+      verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
+      verboseResult.executionDetails.steps.push(
+        `Connection sent via: ${connectionMethod}${selectorInfo}`,
+      );
+
+      if (result?.viaDirect) {
+        verboseResult.executionDetails.playwrightDetails.selectors.push(
+          result.selector || 'unknown',
+        );
+      }
+
+      if (result?.noteAdded) {
+        verboseResult.executionDetails.steps.push(
+          `Custom note added: ${note?.slice(0, 50)}...`,
+        );
+      }
+
+      verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
+      verboseResult.toolResult = result;
+
+      return verboseResult;
     } catch (e: any) {
       const endTime = Date.now();
       verboseResult.executionDetails.endTime = endTime;
@@ -1157,10 +1259,10 @@ async (page) => {
         timestamp: endTime,
       });
       verboseResult.executionDetails.steps.push(
-        `Outer error: ${e?.message ?? 'Unknown error'}`,
+        `Error occurred: ${e?.message ?? 'Unknown error'}`,
       );
 
-      this.logger.warn(`sendConnection failed: ${e?.message ?? e}`);
+      this.logger.warn(`sendConnection (popover) failed: ${e?.message ?? e}`);
 
       return {
         ok: false,
@@ -1170,5 +1272,27 @@ async (page) => {
         sessionId,
       };
     }
+  } catch (e: any) {
+    const endTime = Date.now();
+    verboseResult.executionDetails.endTime = endTime;
+    verboseResult.executionDetails.executionTimeMs = endTime - startTime;
+    verboseResult.executionDetails.errors.push({
+      message: e?.message ?? 'Unknown error',
+      stack: e?.stack,
+      timestamp: endTime,
+    });
+    verboseResult.executionDetails.steps.push(`Outer error: ${e?.message ?? 'Unknown error'}`);
+
+    this.logger.warn(`sendConnection failed: ${e?.message ?? e}`);
+
+    return {
+      ok: false,
+      error: e?.message ?? 'Unknown error',
+      executionDetails: verboseResult.executionDetails,
+      profileUrl,
+      sessionId,
+    };
   }
+}
+
 }

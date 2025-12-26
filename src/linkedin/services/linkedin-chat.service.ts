@@ -136,12 +136,12 @@ async (page) => {
   }
 
   // ✅ UPDATED: buildReadChatCode con ensureOnUrl (skip si ya está en la URL)
-  private buildReadChatCode(
-    profileUrl: string,
-    limit: number,
-    threadHint?: string,
-  ) {
-    return `
+private buildReadChatCode(
+  profileUrl: string,
+  limit: number,
+  threadHint?: string,
+) {
+  return `
 async (page) => {
   ${buildEnsureOnUrlSnippet()}
   const profileUrl = ${JSON.stringify(profileUrl)};
@@ -170,7 +170,7 @@ async (page) => {
     ];
 
     for (const sel of candidates) {
-      const a = page.locator(sel).first();
+      const a = page.locator(sel).last();
       if (!(await a.count().catch(() => 0))) continue;
       const href = (await a.getAttribute('href').catch(() => '')) || '';
       if (!href || !href.includes('/in/')) continue;
@@ -404,21 +404,31 @@ async (page) => {
   await sleep(800);
 
   // -----------------------------
-  // 5) ✅ FIX: Scroll UP (hasta arriba real del contenedor) para cargar TODO el historial
-  //    (antes se quedaba en ~20 porque no elegía bien el scrollable / no forzaba el "load older")
+  // 5) ✅ FIX REAL: Scroll UP hasta el sentinel top-of-list para cargar TODO el historial
+  //    - el scroll real (según tu HTML) es: div.msg-s-message-list.full-width.scrollable
+  //    - adentro existe: li.msg-s-message-list__top-of-list + li.msg-s-message-list__loader
+  //    - si el contenedor aún no es scrollable, forzamos wheel/scroll events reales
   // -----------------------------
   await debug('Starting message scrolling to load all content...');
 
-  const scrollToLoadMessages = async () => {
+    const scrollToLoadMessages = async () => {
     const scrollSelectors = [
-      // ✅ muy importante: este suele ser el verdadero scrollable
-      '.msg-s-message-list-container',
+      // ✅ tu caso real
+      '.msg-s-message-list.full-width.scrollable',
+      '.msg-s-message-list.scrollable',
       '.msg-s-message-list',
+      // ✅ NEW: tu sospecha (el UL interno)
+      'ul.msg-s-message-list-content',
+      '.msg-s-message-list-content',
+      // fallbacks
+      '.msg-s-message-list-container',
       '.msg-overlay-conversation-bubble__content-wrapper',
       '.msg-conversation__body',
       '.msg-thread',
       '[data-view-name*="conversation"]',
     ];
+
+    const clamp = (v, min, max) => Math.max(min, Math.min(max, v));
 
     const pickBestScrollable = async () => {
       let bestLoc = null;
@@ -426,37 +436,49 @@ async (page) => {
       let bestInfo = null;
       let bestScore = -1;
 
+      const candidatesFor = (sel) => {
+        // preferimos dentro de root, pero si root ya es el contenedor, root.locator(sel) puede dar 0.
+        return [root.locator(sel).last(), page.locator(sel).last()];
+      };
+
       for (const sel of scrollSelectors) {
-        const loc = root.locator(sel).first();
-        if (!(await loc.count().catch(() => 0))) continue;
-        const visible = await loc.isVisible().catch(() => false);
-        if (!visible) continue;
+        const [inRoot, inPage] = candidatesFor(sel);
 
-        const info = await loc
-          .evaluate((el) => {
-            const st = window.getComputedStyle(el);
-            const oy = (st.overflowY || '').toLowerCase();
-            const sh = el.scrollHeight || 0;
-            const ch = el.clientHeight || 0;
-            const cls = (el.className || '').toString();
-            const tag = (el.tagName || '').toString();
-            const scrollable = sh > ch + 20 && (oy === 'auto' || oy === 'scroll' || oy === 'overlay');
-            return { oy, sh, ch, cls, tag, scrollable };
-          })
-          .catch(() => null);
+        for (const loc of [inRoot, inPage]) {
+          try {
+            if (!(await loc.count().catch(() => 0))) continue;
+            const visible = await loc.isVisible().catch(() => false);
+            if (!visible) continue;
 
-        if (!info) continue;
+            const info = await loc
+              .evaluate((el) => {
+                const st = window.getComputedStyle(el);
+                const oy = (st.overflowY || '').toLowerCase();
+                const sh = el.scrollHeight || 0;
+                const ch = el.clientHeight || 0;
+                const cls = (el.className || '').toString();
+                const tag = (el.tagName || '').toString();
+                const scrollable = sh > ch + 8 && (oy === 'auto' || oy === 'scroll' || oy === 'overlay');
+                return { oy, sh, ch, cls, tag, scrollable };
+              })
+              .catch(() => null);
 
-        // score: preferir scrollable real y el que tenga más "contenido" para scrollear
-        const score = (info.scrollable ? 1_000_000 : 0) + Math.max(0, info.sh - info.ch);
-        if (score > bestScore) {
-          bestScore = score;
-          bestLoc = loc;
-          bestSel = sel;
-          bestInfo = info;
+            if (!info) continue;
+
+            // score: preferir scrollable real + más contenido
+            const score = (info.scrollable ? 1_000_000 : 0) + Math.max(0, info.sh - info.ch);
+
+            if (score > bestScore) {
+              bestScore = score;
+              bestLoc = loc;
+              bestSel = sel;
+              bestInfo = info;
+            }
+          } catch {}
         }
       }
 
+      // Si no encontramos nada bueno, caemos en root
       return {
         loc: bestLoc || root,
         sel: bestSel || 'root',
@@ -464,187 +486,216 @@ async (page) => {
       };
     };
 
-    const getMessageSnapshot = async () => {
-      return await root.evaluate((rootEl) => {
-        const norm = (s) => (s ?? '').toString().replace(/\\s+/g, ' ').trim();
-        const nodes = Array.from(rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group'));
-        const first = nodes[0] || null;
-        const last = nodes[nodes.length - 1] || null;
-
-        const keyOf = (el) => {
-          if (!el) return '';
-          const id = el.getAttribute?.('data-event-urn') || el.getAttribute?.('data-entity-urn') || el.id || '';
-          const txt = norm(el.textContent).slice(0, 120);
-          return id + '|' + txt;
-        };
-
-        return {
-          count: nodes.length,
-          firstKey: keyOf(first),
-          lastKey: keyOf(last),
-        };
-      });
+    const getMessageCount = async () => {
+      try {
+        return await root.evaluate((rootEl) => {
+          const nodes = Array.from(
+            rootEl.querySelectorAll('.msg-s-event-listitem, .msg-s-message-group, .msg-s-message-list__event')
+          );
+          return nodes.length;
+        });
+      } catch {
+        return 0;
+      }
     };
 
     const picked = await pickBestScrollable();
-    let scrollContainer = picked.loc;
+    const scrollContainer = picked.loc;
 
-    try {
-      await debug(
-        'Using scroll container -> ' +
-          picked.sel +
-          (picked.info
-            ? ' (scrollHeight=' +
-              picked.info.sh +
-              ', clientHeight=' +
-              picked.info.ch +
-              ', overflowY=' +
-              picked.info.oy +
-              ')'
-            : '')
-      );
-    } catch {}
+    await debug(
+      'Using scroll container -> ' +
+        picked.sel +
+        (picked.info
+          ? ' (scrollHeight=' + picked.info.sh + ', clientHeight=' + picked.info.ch + ', overflowY=' + picked.info.oy + ')'
+          : '')
+    );
 
-    // focus para que scroll / teclas afecten al contenedor correcto
+    // Focus para que scrollTop “pegue” al contenedor correcto
     try {
       await scrollContainer.scrollIntoViewIfNeeded().catch(() => {});
       await scrollContainer.click({ timeout: 2000 }).catch(() => {});
       await scrollContainer.evaluate((el) => el.focus && el.focus()).catch(() => {});
     } catch {}
 
-    // detectar si está "column-reversed" (en ese caso, el historial viejo puede cargar scrolleando hacia ABAJO)
-    const isReversed = await scrollContainer
+    // 🔒 Detectar column-reverse UNA SOLA VEZ (NO re-detect dentro del loop)
+    const meta = await scrollContainer
       .evaluate((el) => {
-        const cls = (el.className || '').toString();
-        if (cls.includes('column-reversed')) return true;
-        try {
-          const st = window.getComputedStyle(el);
-          if ((st.display || '').includes('flex') && st.flexDirection === 'column-reverse') return true;
-        } catch {}
-        return false;
+        const cs = getComputedStyle(el);
+        const flexDir = (cs.flexDirection || '').toLowerCase();
+        const cls = (el.className || '').toString().toLowerCase();
+
+        const isReverse = flexDir.includes('column-reverse') || cls.includes('column-reversed');
+
+        const scrollH = el.scrollHeight || 0;
+        const clientH = el.clientHeight || 0;
+
+        // In column-reverse, scrollTop range usually: [-(scrollH-clientH) .. 0]
+        const span = Math.max(0, scrollH - clientH);
+        const min = isReverse ? -span : 0;
+        const max = isReverse ? 0 : span;
+
+        return {
+          isReverse,
+          flexDir,
+          overflowY: (cs.overflowY || '').toLowerCase(),
+          scrollTop: el.scrollTop || 0,
+          scrollH,
+          clientH,
+          min,
+          max,
+        };
       })
-      .catch(() => false);
+      .catch(() => ({
+        isReverse: false,
+        flexDir: '',
+        overflowY: '',
+        scrollTop: 0,
+        scrollH: 0,
+        clientH: 0,
+        min: 0,
+        max: 0,
+      }));
 
-    await debug('Scroll direction -> ' + (isReversed ? 'DOWN (column-reverse)' : 'UP'));
+    // ✅ La dirección “para cargar mensajes viejos” es SIEMPRE hacia arriba lógico:
+    // - normal: bajar scrollTop hacia 0
+    // - column-reverse: bajar scrollTop hacia negativos (hasta min)
+    await debug('Scroll direction -> UP' + (meta.isReverse ? ' (column-reverse)' : ''));
 
-    const maxAttempts = 45;
-    const scrollDelay = 650;
+    const step = 420;
+    const maxAttempts = 80;
+    const settleMs = 220;
+    const stableStop = 10;
 
-    let stableEdgeTries = 0;
-    let lastFirstKey = '';
-    let lastCount = -1;
+    // ✅ Asegurar inicio en el extremo “más nuevo”
+    try {
+      await scrollContainer.evaluate((el, startTop) => {
+        el.scrollTop = startTop;
+      }, meta.max);
+    } catch {}
+    await sleep(settleMs);
 
-    for (let attempt = 0; attempt < maxAttempts; attempt++) {
-      // click “cargar más” si aparece (a veces LinkedIn lo muestra)
-      try {
-        const loadMore = root
-          .locator('button, a')
-          .filter({ hasText: /ver mensajes anteriores|cargar más|load older|see older|older messages/i })
-          .first();
-        if ((await loadMore.count().catch(() => 0)) && (await loadMore.isVisible().catch(() => false))) {
-          await debug('Load-older button detected -> clicking');
-          await loadMore.click({ timeout: 2000 }).catch(() => {});
-          await sleep(600);
-        }
-      } catch {}
+    let noChange = 0;
+    let lastTarget = meta.max;
 
-      const snapBefore = await getMessageSnapshot().catch(() => ({ count: 0, firstKey: '', lastKey: '' }));
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const beforeCount = await getMessageCount();
 
-      const edge = await scrollContainer
+      const before = await scrollContainer
         .evaluate((el) => {
           return {
             top: el.scrollTop || 0,
-            sh: el.scrollHeight || 0,
-            ch: el.clientHeight || 0,
+            scrollH: el.scrollHeight || 0,
+            clientH: el.clientHeight || 0,
           };
         })
-        .catch(() => ({ top: 0, sh: 0, ch: 0 }));
+        .catch(() => ({ top: 0, scrollH: 0, clientH: 0 }));
 
-      const atEdge = isReversed
-        ? edge.top + edge.ch >= edge.sh - 2 // abajo
-        : edge.top <= 2; // arriba
+      // ✅ Recalcular bounds por scrollHeight actual, pero SIN re-detect reverse
+      const bounds = await scrollContainer
+        .evaluate((el, isReverse) => {
+          const scrollH = el.scrollHeight || 0;
+          const clientH = el.clientHeight || 0;
+          const span = Math.max(0, scrollH - clientH);
+          const min = isReverse ? -span : 0;
+          const max = isReverse ? 0 : span;
+          return { min, max };
+        }, meta.isReverse)
+        .catch(() => ({ min: meta.min, max: meta.max }));
+
+      // ✅ Mover hacia “más viejo”: current - step (clamp a bounds)
+      const target = clamp(before.top - step, bounds.min, bounds.max);
+      lastTarget = target;
+
+      await scrollContainer
+        .evaluate((el, t) => {
+          el.scrollTop = t;
+        }, target)
+        .catch(() => {});
+
+      await sleep(settleMs);
+
+      // ✅ Anti-snapback: LinkedIn a veces te devuelve a 0 (latest) → forzar al target
+      await scrollContainer
+        .evaluate((el, t) => {
+          const drift = (el.scrollTop || 0) - t;
+          if (Math.abs(drift) > 40) el.scrollTop = t;
+        }, lastTarget)
+        .catch(() => {});
+
+      await sleep(80);
+
+      const afterCount = await getMessageCount();
+
+      const after = await scrollContainer
+        .evaluate((el) => {
+          return { top: el.scrollTop || 0, scrollH: el.scrollHeight || 0 };
+        })
+        .catch(() => ({ top: 0, scrollH: 0 }));
+
+      const changed = afterCount !== beforeCount || after.scrollH !== before.scrollH;
+      const atEdge = Math.abs(after.top - bounds.min) <= 2;
 
       await debug(
         'Scroll attempt ' +
-          (attempt + 1) +
-          ': count=' +
-          snapBefore.count +
+          attempt +
+          ': before=' +
+          beforeCount +
+          ', after=' +
+          afterCount +
+          ', changed=' +
+          changed +
           ', atEdge=' +
           atEdge +
           ', scrollTop=' +
-          edge.top +
+          after.top +
           ', scrollH=' +
-          edge.sh
+          after.scrollH
       );
 
-      // condición de “ya estoy arriba/abajo y no cambia el primer item” -> terminé de cargar historial
-      const firstKey = snapBefore.firstKey || '';
-      const countSame = snapBefore.count === lastCount;
-      const firstSame = firstKey && firstKey === lastFirstKey;
+      if (changed) noChange = 0;
+      else noChange++;
 
-      if (atEdge && (firstSame || !firstKey) && countSame) {
-        stableEdgeTries++;
-      } else {
-        stableEdgeTries = 0;
-      }
-
-      lastFirstKey = firstKey || lastFirstKey;
-      lastCount = snapBefore.count;
-
-      if (stableEdgeTries >= 3) {
+      if (atEdge && noChange >= stableStop) {
         await debug('Reached edge and content stabilized -> stop scrolling');
         break;
       }
 
-      // scroll step: en normal subimos; en reversed bajamos
-      try {
-        await scrollContainer.evaluate(
-          (el, reversed) => {
-            const delta = Math.max(420, Math.floor((el.clientHeight || 600) * 0.92));
-            // usar scrollBy repetido (mejor para disparar "load older" que un solo scrollTo)
-            el.scrollBy({ top: reversed ? +delta : -delta, left: 0, behavior: 'auto' });
+      // ✅ Jitter cada tanto (para “despertar” lazy-load), manteniendo la dirección correcta
+      if (noChange > 0 && noChange % 8 === 0) {
+        await debug('No DOM change -> extra jitter');
 
-            // micro-jitter cerca del borde para forzar lazy-load
-            if (!reversed && (el.scrollTop || 0) < 50) {
-              el.scrollBy({ top: -80, left: 0, behavior: 'auto' });
-            }
-            if (reversed && (el.scrollTop || 0) > (el.scrollHeight - el.clientHeight - 50)) {
-              el.scrollBy({ top: +80, left: 0, behavior: 'auto' });
-            }
-          },
-          isReversed
-        );
-      } catch (e) {
-        await debug('Scrolling error: ' + (e && e.message ? e.message : String(e)));
-      }
+        await scrollContainer
+          .evaluate((el, isReverse) => {
+            const scrollH = el.scrollHeight || 0;
+            const clientH = el.clientHeight || 0;
+            const span = Math.max(0, scrollH - clientH);
+            const min = isReverse ? -span : 0;
+            const max = isReverse ? 0 : span;
 
-      await sleep(scrollDelay);
+            const tiny = 140;
+            const t = Math.max(min, Math.min(max, (el.scrollTop || 0) - tiny));
+            el.scrollTop = t;
+          }, meta.isReverse)
+          .catch(() => {});
 
-      // si no cambió nada, intentar ir “directo” al borde una vez (para no quedarnos clavados)
-      const snapAfter = await getMessageSnapshot().catch(() => ({ count: 0, firstKey: '', lastKey: '' }));
-      const noChange =
-        snapAfter.count === snapBefore.count &&
-        (snapAfter.firstKey || '') === (snapBefore.firstKey || '') &&
-        (snapAfter.lastKey || '') === (snapBefore.lastKey || '');
+        await sleep(220);
 
-      if (noChange && attempt % 6 === 5) {
-        await debug('No DOM change detected -> forcing hard scroll to edge');
-        try {
-          await scrollContainer.evaluate(
-            (el, reversed) => {
-              if (reversed) el.scrollTo({ top: el.scrollHeight, behavior: 'auto' });
-              else el.scrollTo({ top: 0, behavior: 'auto' });
-            },
-            isReversed
-          );
-        } catch {}
-        await sleep(900);
+        // anti-snapback nuevamente
+        await scrollContainer
+          .evaluate((el, t) => {
+            const drift = (el.scrollTop || 0) - t;
+            if (Math.abs(drift) > 40) el.scrollTop = t;
+          }, lastTarget)
+          .catch(() => {});
+
+        await sleep(80);
       }
     }
 
     await debug('Scrolling completed.');
-    await sleep(900);
+    await sleep(700);
   };
+
 
   await scrollToLoadMessages();
 
@@ -880,18 +931,15 @@ async (page) => {
           let year = null;
 
           if (/^\\d/.test(m[1])) {
-            // (day)(month)(year?)
             day = parseInt(m[1], 10);
             monStr = (m[2] || '').toLowerCase();
             year = m[3] ? parseInt(m[3], 10) : null;
           } else {
-            // (month)(day)(year?)
             monStr = (m[1] || '').toLowerCase();
             day = parseInt(m[2], 10);
             year = m[3] ? parseInt(m[3], 10) : null;
           }
 
-          // Normalizar month key (corta a 3 si hace falta)
           let monKey = monStr;
           if (!months.hasOwnProperty(monKey) && monKey.length > 3) monKey = monKey.slice(0, 3);
 
@@ -899,7 +947,6 @@ async (page) => {
             let yy = year || now.getFullYear();
             let d = new Date(yy, months[monKey], day);
 
-            // Heurística de año: si queda en el futuro "demasiado", probablemente fue año anterior (ej: hoy es enero y dice "dic")
             const futureGuard = new Date(now.getTime());
             futureGuard.setDate(futureGuard.getDate() + 2);
 
@@ -1427,7 +1474,6 @@ async (page) => {
               }
             }
 
-            // ✅ NEW: datetime desde time-heading más cercano (ej: "9 dic", "jueves")
             const dayHeadingRaw =
               getDayHeadingTextForNode(it) ||
               getDayHeadingTextForNode(g) ||
@@ -1436,8 +1482,6 @@ async (page) => {
 
             const day = parseDayHeadingToYMD(dayHeadingRaw, new Date());
             const datetimeFromHeading = day?.ymd ? combineYmdAndTimeToIso(day.ymd, t.time) : null;
-
-            // fallback: si no hay heading o no se pudo parsear, dejamos null (antes te quedaba null siempre)
             const datetime = datetimeFromHeading;
 
             const role = detectRole(it, g, finalSenderName, finalSenderUrl);
@@ -1493,7 +1537,6 @@ async (page) => {
         }
       }
 
-      // Generic fallback (igual que antes)
       if (extractionResults.every((r) => r.messagesFound === 0)) {
         console.log('[extract-debug] All structured strategies failed, trying generic text extraction');
         const fallbackEls = Array.from(rootEl.querySelectorAll('p, span, div'))
@@ -1533,7 +1576,6 @@ async (page) => {
         });
       }
 
-      // Pick best strategy
       let bestStrategy = extractionResults[0];
 
       for (const result of extractionResults) {
@@ -1551,7 +1593,6 @@ async (page) => {
         if (currentQuality > bestQuality) bestStrategy = result;
       }
 
-      // Dedupe
       const seen = new Set();
       const deduped = [];
       for (const m of bestStrategy.messages || []) {
@@ -2009,7 +2050,8 @@ async (page) => {
   return result;
 }
 `;
-  }
+}
+
 
   // -----------------------------
   // ✅ UPDATED: readChat multi-sesión (safe parse + correct logs)
