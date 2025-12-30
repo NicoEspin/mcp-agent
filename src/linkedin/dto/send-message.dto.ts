@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  IsUUID,
   MinLength,
   ValidateIf,
 } from 'class-validator';
@@ -13,6 +14,10 @@ export class SendMessageDto {
   @IsString()
   @MinLength(1)
   sessionId?: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  taskId?: string;
 
   @IsUrl()
   profileUrl!: string;

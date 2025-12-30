@@ -61,6 +61,7 @@ export class LinkedinController {
       // ✅ verification FIRST
       const verification = await this.verifier.verifyAfterAction({
         sessionId,
+        taskId: dto.taskId,
         action: 'read_chat',
         profileUrl: dto.profileUrl,
         actionResult,
@@ -90,51 +91,52 @@ export class LinkedinController {
   // -------------------
   // send-message (POST)
   // -------------------
-@Post('send-message')
-async sendMessage(@Body() dto: SendMessageDto) {
-  const sessionId = dto.sessionId ?? 'default';
+  @Post('send-message')
+  async sendMessage(@Body() dto: SendMessageDto) {
+    const sessionId = dto.sessionId ?? 'default';
 
-  return this.withSessionLock(sessionId, async () => {
-    const messages =
-      Array.isArray(dto.messages) && dto.messages.length
-        ? dto.messages
-        : [dto.message ?? ''];
+    return this.withSessionLock(sessionId, async () => {
+      const messages =
+        Array.isArray(dto.messages) && dto.messages.length
+          ? dto.messages
+          : [dto.message ?? ''];
 
-    const actionResult = await this.linkedin.sendMessage(
-      sessionId,
-      dto.profileUrl,
-      messages, // ✅ ahora puede ser array
-    );
+      const actionResult = await this.linkedin.sendMessage(
+        sessionId,
+        dto.profileUrl,
+        messages, // ✅ ahora puede ser array
+      );
 
-    // ✅ verification FIRST
-    const verification = await this.verifier.verifyAfterAction({
-      sessionId,
-      action: 'send_message',
-      profileUrl: dto.profileUrl,
-      message: messages.join('\n\n'), // para mantener compat con el verifier
-      actionResult,
-    });
+      // ✅ verification FIRST
+      const verification = await this.verifier.verifyAfterAction({
+        sessionId,
+        taskId: dto.taskId,
+        action: 'send_message',
+        profileUrl: dto.profileUrl,
+        message: messages.join('\n\n'), // para mantener compat con el verifier
+        actionResult,
+      });
 
-    // ✅ close AFTER verification
-    let closeChat: any = null;
+      // ✅ close AFTER verification
+      let closeChat: any = null;
 
-    if (verification?.is_human_required) {
-      closeChat = {
-        ok: true,
-        skipped: true,
-        reason: verification.human_reason ?? 'human_required',
-      };
-    } else {
-      try {
-        closeChat = await this.chat.closeChatOverlay(sessionId);
-      } catch (e: any) {
-        closeChat = { ok: false, error: e?.message ?? String(e) };
+      if (verification?.is_human_required) {
+        closeChat = {
+          ok: true,
+          skipped: true,
+          reason: verification.human_reason ?? 'human_required',
+        };
+      } else {
+        try {
+          closeChat = await this.chat.closeChatOverlay(sessionId);
+        } catch (e: any) {
+          closeChat = { ok: false, error: e?.message ?? String(e) };
+        }
       }
-    }
 
-    return { ...actionResult, verification, closeChat };
-  });
-}
+      return { ...actionResult, verification, closeChat };
+    });
+  }
   // -------------------
   // send-connection (POST)
   // -------------------
@@ -152,6 +154,7 @@ async sendMessage(@Body() dto: SendMessageDto) {
 
       const verification = await this.verifier.verifyAfterAction({
         sessionId,
+        taskId: dto.taskId,
         action: 'send_connection',
         profileUrl: dto.profileUrl,
         note: dto.note,
@@ -177,7 +180,7 @@ async sendMessage(@Body() dto: SendMessageDto) {
   // open (POST)
   // -------------------
   @Post('open')
-  async open(@Body() body?: { sessionId?: string }) {
+  async open(@Body() body?: { sessionId?: string; taskId?: string }) {
     const sessionId = body?.sessionId ?? 'default';
     const startTime = Date.now();
     const targetUrl = 'https://www.linkedin.com/';
@@ -186,6 +189,7 @@ async sendMessage(@Body() dto: SendMessageDto) {
       success: true,
       url: targetUrl,
       sessionId,
+      taskId: body?.taskId,
       executionDetails: {
         startTime,
         endTime: null as number | null,
@@ -277,6 +281,7 @@ async sendMessage(@Body() dto: SendMessageDto) {
       // ✅ verification FIRST (reusamos action='read_chat' para no tocar types)
       const verification = await this.verifier.verifyAfterAction({
         sessionId,
+        taskId: dto.taskId,
         action: 'read_chat',
         profileUrl: dto.profileUrl,
         actionResult,
@@ -319,6 +324,7 @@ async sendMessage(@Body() dto: SendMessageDto) {
       // (Opcional) Reusar verificación como send_message (para no tocar types)
       const verification = await this.verifier.verifyAfterAction({
         sessionId,
+        taskId: dto.taskId,
         action: 'send_message',
         profileUrl: dto.profileUrl,
         message: dto.message,

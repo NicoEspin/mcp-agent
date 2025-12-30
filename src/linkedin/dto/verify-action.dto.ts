@@ -11,6 +11,7 @@ export class VerifyActionDto {
   @IsOptional()
   @IsString()
   sessionId?: string;
+  taskId?: string;
 
   @IsString()
   @IsIn(['open', 'send_message', 'send_connection', 'read_chat'])

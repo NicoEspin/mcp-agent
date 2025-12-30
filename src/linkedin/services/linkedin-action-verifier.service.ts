@@ -18,7 +18,7 @@ export type LinkedinActionVerification = {
   sessionId: string;
 
   completed: boolean;
-  confidence: number; // 0..1
+  confidence: number;
   details: string;
   signals: string[];
 
@@ -56,6 +56,62 @@ export class LinkedinActionVerifierService {
 
   private sleep(ms: number) {
     return new Promise((r) => setTimeout(r, ms));
+  }
+
+  // ✅ NEW: upload screenshots to Django webhook_task/<taskId>
+  private async uploadShotsToZionWebhook(taskId: string, shots: BurstShot[]) {
+    const baseUrl = this.config.get<string>('ZION_BACKEND_BASE_URL');
+    if (!baseUrl) {
+      this.logger.warn('ZION_BACKEND_BASE_URL missing -> skip webhook upload');
+      return;
+    }
+
+    const images = shots.map((s) => s.base64).filter(Boolean);
+    if (!images.length) return;
+
+    const url = `${baseUrl.replace(/\/$/, '')}/api/v1/phoenix/zion/webhook_task/${taskId}`;
+
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+    };
+
+    // (Opcional) si después le ponen auth/secret al webhook
+    const secret = this.config.get<string>('ZION_WEBHOOK_SECRET');
+    if (secret) headers['X-Zion-Webhook-Secret'] = secret;
+
+    const controller = new AbortController();
+    const timeoutMs = Number(
+      this.config.get<string>('ZION_WEBHOOK_TIMEOUT_MS') ?? 8000,
+    );
+    const t = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ images }),
+        signal: controller.signal,
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        this.logger.warn(
+          `webhook_task upload failed taskId=${taskId} status=${res.status} body=${text.slice(0, 400)}`,
+        );
+        return;
+      }
+
+      const json = await res.json().catch(() => null);
+      this.logger.debug(
+        `webhook_task upload ok taskId=${taskId} images=${images.length} resp=${json ? JSON.stringify(json) : 'ok'}`,
+      );
+    } catch (e: any) {
+      this.logger.warn(
+        `webhook_task upload error taskId=${taskId}: ${e?.name ?? ''} ${e?.message ?? e}`,
+      );
+    } finally {
+      clearTimeout(t);
+    }
   }
 
   private safeJsonParse(text: string): any | null {
@@ -189,7 +245,7 @@ Perfil: ${profileUrl ?? 'N/A'}
     const shots: BurstShot[] = [];
     const start = Date.now();
 
-    const preDelayMs = opts?.preDelayMs ?? 650; // important for send_message/read_chat UI settle
+    const preDelayMs = opts?.preDelayMs ?? 650;
     const intervalMs = opts?.intervalMs ?? 1750;
     const count = opts?.count ?? 3;
 
@@ -220,6 +276,7 @@ Perfil: ${profileUrl ?? 'N/A'}
     note?: string;
     actionResult?: any;
     shots: BurstShot[];
+    taskId?: string; // ✅ NEW
   }): Promise<LinkedinActionVerification> {
     const model = 'gpt-5-nano';
     const apiKey = this.config.get<string>('OPENAI_API_KEY');
@@ -246,6 +303,11 @@ Perfil: ${profileUrl ?? 'N/A'}
     }
 
     try {
+      // ✅ NEW: subimos screenshots al backend si hay taskId (no rompe si falla)
+      if (args.taskId) {
+        await this.uploadShotsToZionWebhook(args.taskId, args.shots);
+      }
+
       const prompt = this.buildPrompt(args);
 
       const content: any[] = [{ type: 'text', text: prompt }];
@@ -337,11 +399,10 @@ Perfil: ${profileUrl ?? 'N/A'}
     message?: string;
     note?: string;
     actionResult?: any;
+    taskId?: string; // ✅ NEW
   }): Promise<LinkedinActionVerification> {
     try {
-      // ✅ burst first (with UI settle), then OpenAI scoring
       const shots = await this.captureBurstForVerification(args.sessionId, {
-        // You can tweak per action if you want:
         preDelayMs: args.action === 'send_message' ? 800 : 650,
         intervalMs: 1750,
         count: 3,
@@ -376,7 +437,6 @@ Perfil: ${profileUrl ?? 'N/A'}
           mimeTypes: [],
           totalBase64Chars: 0,
         },
-
         model,
       };
     }

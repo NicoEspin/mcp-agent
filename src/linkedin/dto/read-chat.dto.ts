@@ -4,6 +4,7 @@ import {
   IsOptional,
   IsString,
   IsUrl,
+  IsUUID,
   Max,
   Min,
   MinLength,
@@ -17,6 +18,12 @@ export class ReadChatDto {
 
   @IsUrl()
   profileUrl!: string;
+
+    // ✅ NEW
+  @IsOptional()
+  @IsUUID('4')
+  taskId?: string;
+
 
   @IsOptional()
   @IsInt()

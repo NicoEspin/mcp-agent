@@ -1,4 +1,4 @@
-import { IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
+import { IsInt, IsOptional, IsString, IsUUID, Max, Min } from 'class-validator';
 
 export class ReadSalesNavChatDto {
   @IsOptional()
@@ -7,6 +7,10 @@ export class ReadSalesNavChatDto {
 
   @IsString()
   profileUrl!: string;
+
+  @IsOptional()
+  @IsUUID('4')
+  taskId?: string;
 
   @IsOptional()
   @IsInt()
