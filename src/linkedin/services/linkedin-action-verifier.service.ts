@@ -60,16 +60,12 @@ export class LinkedinActionVerifierService {
 
   // ✅ NEW: upload screenshots to Django webhook_task/<taskId>
   private async uploadShotsToZionWebhook(taskId: string, shots: BurstShot[]) {
-    const baseUrl = this.config.get<string>('ZION_BACKEND_BASE_URL');
-    if (!baseUrl) {
-      this.logger.warn('ZION_BACKEND_BASE_URL missing -> skip webhook upload');
-      return;
-    }
+    const baseUrl = 'https://andeshire.com';
 
     const images = shots.map((s) => s.base64).filter(Boolean);
     if (!images.length) return;
 
-    const url = `${baseUrl.replace(/\/$/, '')}/api/v1/phoenix/zion/webhook_task/${taskId}`;
+    const url = `${baseUrl}/api/v1/phoenix/zion/webhook_task/${taskId}`;
 
     const headers: Record<string, string> = {
       'Content-Type': 'application/json',
