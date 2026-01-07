@@ -5,6 +5,7 @@ import { LinkedinConnectionService } from './services/linkedin-connection.servic
 import { LinkedinSalesNavigatorService } from './services/linkedin-sales-navigator.service';
 import { LinkedinSalesNavigatorChatService } from './services/linkedin-sales-navigator-chat.service';
 import { LinkedinSalesNavigatorConnectionService } from './services/linkedin-sales-navigator-connection.service';
+import { LinkedinWarmUpService } from './services/linkedin-warmup.service';
 
 @Injectable()
 export class LinkedinService {
@@ -14,6 +15,7 @@ export class LinkedinService {
     private readonly salesNav: LinkedinSalesNavigatorService,
     private readonly salesNavChat: LinkedinSalesNavigatorChatService,
     private readonly salesNavConn: LinkedinSalesNavigatorConnectionService,
+    private readonly warmup: LinkedinWarmUpService,
   ) {}
 
   // -------------------------------
@@ -61,32 +63,44 @@ export class LinkedinService {
     return this.chat.readChat(sessionId, profileUrl, limit, threadHint);
   }
 
-// -------------------------------
-// sendMessage - overload multi-sesión + multi-messages
-// -------------------------------
+  // -------------------------------
+  // sendMessage - overload multi-sesión + multi-messages
+  // -------------------------------
 
-// Legacy:
-//   sendMessage(profileUrl, message | messages)
-sendMessage(profileUrl: string, message: string | string[]): Promise<any>;
+  // Legacy:
+  //   sendMessage(profileUrl, message | messages)
+  sendMessage(profileUrl: string, message: string | string[]): Promise<any>;
 
-// Nuevo:
-//   sendMessage(sessionId, profileUrl, message | messages)
-sendMessage(
-  sessionId: string,
-  profileUrl: string,
-  message: string | string[],
-): Promise<any>;
+  // Nuevo:
+  //   sendMessage(sessionId, profileUrl, message | messages)
+  sendMessage(
+    sessionId: string,
+    profileUrl: string,
+    message: string | string[],
+  ): Promise<any>;
 
-async sendMessage(
-  a: string,
-  b: string | string[],
-  c?: string | string[],
-): Promise<any> {
-  // Nueva firma: (sessionId, profileUrl, messageOrMessages)
-  if (typeof c !== 'undefined') {
-    const sessionId = a;
-    const profileUrl = b as string;
-    const messageOrMessages = c;
+  async sendMessage(
+    a: string,
+    b: string | string[],
+    c?: string | string[],
+  ): Promise<any> {
+    // Nueva firma: (sessionId, profileUrl, messageOrMessages)
+    if (typeof c !== 'undefined') {
+      const sessionId = a;
+      const profileUrl = b as string;
+      const messageOrMessages = c;
+
+      const messages = Array.isArray(messageOrMessages)
+        ? messageOrMessages
+        : [messageOrMessages];
+
+      return this.chat.sendMessages(sessionId, profileUrl, messages);
+    }
+
+    // Legacy: (profileUrl, messageOrMessages) -> sesión "default"
+    const sessionId = 'default';
+    const profileUrl = a;
+    const messageOrMessages = b;
 
     const messages = Array.isArray(messageOrMessages)
       ? messageOrMessages
@@ -94,18 +108,6 @@ async sendMessage(
 
     return this.chat.sendMessages(sessionId, profileUrl, messages);
   }
-
-  // Legacy: (profileUrl, messageOrMessages) -> sesión "default"
-  const sessionId = 'default';
-  const profileUrl = a;
-  const messageOrMessages = b;
-
-  const messages = Array.isArray(messageOrMessages)
-    ? messageOrMessages
-    : [messageOrMessages];
-
-  return this.chat.sendMessages(sessionId, profileUrl, messages);
-}
   // -------------------------------
   // sendConnection - overload multi-sesión
   // -------------------------------
@@ -264,7 +266,7 @@ async sendMessage(
     );
   }
 
-   // -------------------------------
+  // -------------------------------
   // checkSalesNavConnection - overload multi-sesión
   // -------------------------------
   checkSalesNavConnection(profileUrl: string): Promise<any>;
@@ -275,12 +277,36 @@ async sendMessage(
     if (typeof b === 'string') {
       const sessionId = a;
       const profileUrl = b;
-      return this.salesNavConn.checkConnectionSalesNavigator(sessionId, profileUrl);
+      return this.salesNavConn.checkConnectionSalesNavigator(
+        sessionId,
+        profileUrl,
+      );
     }
 
     // Legacy: (profileUrl) -> sesión "default"
     const sessionId = 'default';
     const profileUrl = a;
-    return this.salesNavConn.checkConnectionSalesNavigator(sessionId, profileUrl);
+    return this.salesNavConn.checkConnectionSalesNavigator(
+      sessionId,
+      profileUrl,
+    );
+  }
+
+  async startWarmUp(
+    sessionId: string,
+    linkedinUrl: string,
+    lastMessageStr: string,
+    intervalSeconds?: number,
+    maxMinutes?: number,
+    closeOnFinish?: boolean,
+  ) {
+    return this.warmup.startWarmUp(
+      sessionId,
+      linkedinUrl,
+      lastMessageStr,
+      intervalSeconds ?? 60,
+      maxMinutes ?? 30,
+      closeOnFinish ?? true,
+    );
   }
 }

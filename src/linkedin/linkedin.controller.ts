@@ -13,6 +13,7 @@ import { SendSalesNavMessageDto } from './dto/send-salesnav-message.dto';
 import { ReadSalesNavChatDto } from './dto/read-salesnav-chat.dto';
 import { LinkedinSalesNavigatorChatService } from './services/linkedin-sales-navigator-chat.service';
 import { CheckSalesNavConnectionDto } from './dto/check-salesnav-connection.dto';
+import { StartWarmUpDto } from './dto/start-warm-up.dto';
 
 @Controller('linkedin')
 export class LinkedinController {
@@ -423,5 +424,38 @@ export class LinkedinController {
         return { ...verboseResult, verification };
       }
     });
+  }
+
+  @Post('start-warm-up')
+  async startWarmUp(@Body() dto: StartWarmUpDto) {
+    const sessionId = dto.sessionId ?? 'default';
+    const profileUrl = dto.linkedinUrl ?? dto.profileUrl ?? '';
+    const lastMessageStr = dto.lastMessageStr ?? dto.lastMessgeStr ?? '';
+
+    // ⚠️ OJO con el lock:
+    // - Si lo metés en withSessionLock, este request puede quedar “ocupando” la sesión
+    //   hasta que aparezca un mensaje o timeout.
+    // - Si querés serialización estricta, dejalo con lock.
+    // - Si querés que NO bloquee otras acciones, ejecutalo sin lock (como abajo).
+
+    const actionResult = await this.linkedin.startWarmUp(
+      sessionId,
+      profileUrl,
+      lastMessageStr,
+      dto.intervalSeconds ?? 60,
+      dto.maxMinutes ?? 30,
+      dto.closeOnFinish ?? true,
+    );
+
+    // ✅ verification (reusamos action='read_chat' para no tocar types)
+    const verification = await this.verifier.verifyAfterAction({
+      sessionId,
+      taskId: dto.taskId,
+      action: 'read_chat',
+      profileUrl,
+      actionResult,
+    });
+
+    return { ...actionResult, verification };
   }
 }

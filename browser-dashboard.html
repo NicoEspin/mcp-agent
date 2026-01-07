@@ -4,13 +4,12 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Read Chat Debug (No Storage)</title>
+    <title>Sales Navigator Debug (Send Message)</title>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         :root {
             --bg: #0b1020;
             --panel: rgba(255, 255, 255, 0.06);
-            --panel2: rgba(255, 255, 255, 0.08);
             --border: rgba(255, 255, 255, 0.12);
             --text: rgba(255, 255, 255, 0.92);
             --muted: rgba(255, 255, 255, 0.65);
@@ -82,7 +81,6 @@
         }
 
         input,
-        select,
         textarea {
             width: 100%;
             background: rgba(0, 0, 0, 0.25);
@@ -94,13 +92,12 @@
         }
 
         textarea {
-            min-height: 78px;
+            min-height: 92px;
             resize: vertical;
         }
 
         input:focus,
-        textarea:focus,
-        select:focus {
+        textarea:focus {
             border-color: rgba(139, 92, 246, 0.6);
             box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.15);
         }
@@ -184,7 +181,6 @@
             max-height: 78vh;
         }
 
-        /* FIX: estado de focus del stream (visual + bloquea scroll del body mientras está enfocado) */
         .viewer.focused {
             border-color: rgba(139, 92, 246, 0.6);
             box-shadow: 0 0 0 4px rgba(139, 92, 246, 0.15);
@@ -264,7 +260,7 @@
                     <label>Backend Base URL</label>
                     <input id="baseUrl" placeholder="http://localhost:3001" />
                     <div class="subtle" style="margin-top: 6px">
-                        Si abrís este HTML con Live Server (5500), poné acá tu backend (ej: http://localhost:3000).
+                        Si abrís este HTML con Live Server (5500), poné acá tu backend (ej: http://localhost:3001).
                     </div>
                 </div>
                 <div>
@@ -317,40 +313,44 @@
             </div>
 
             <div class="subtle" style="margin-top: 10px">
-                No hay polling de session-state, ni storage. Todo es manual para evitar bucles.
+                Usá el stream para loguearte manualmente. Luego probá <code>send-salesnav-message</code>.
             </div>
 
             <div class="mutedline"></div>
 
             <div class="title" style="margin-top: 0">
-                <span>Read Chat</span>
+                <span>Sales Navigator · Send Message</span>
                 <span class="pill"><span class="dot" id="httpDot"></span><span id="httpStatus">HTTP: idle</span></span>
             </div>
 
             <div>
                 <label>profileUrl</label>
-                <input id="profileUrl" placeholder="https://www.linkedin.com/in/..." />
-            </div>
-
-            <div style="margin-top: 10px">
-                <label>note (opcional)</label>
-                <textarea id="connNote" placeholder="Dejá vacío para enviar SIN nota"></textarea>
+                <input id="snProfileUrl" placeholder="https://www.linkedin.com/in/..." />
+                <div class="subtle" style="margin-top: 6px">
+                    Tip: podés pegar el perfil normal (<code>/in/</code>). Tu backend ya abre SN vía overflow “View in
+                    Sales Navigator”.
+                </div>
             </div>
 
             <div class="grid" style="margin-top: 10px">
                 <div>
-                    <label>limit</label>
-                    <input id="limit" type="number" value="30" min="1" max="200" />
+                    <label>subject (opcional)</label>
+                    <input id="snSubject" placeholder="Asunto (si aparece en la UI)" />
                 </div>
                 <div>
-                    <label>threadHint (opcional)</label>
-                    <input id="threadHint" placeholder="ej: last / recent / name..." />
+                    <label>Acción</label>
+                    <button class="btn primary" id="btnSendSalesNavMessage" style="width:100%">
+                        POST /linkedin/send-salesnav-message
+                    </button>
                 </div>
             </div>
 
+            <div style="margin-top: 10px">
+                <label>message</label>
+                <textarea id="snMessage" placeholder="Escribí el mensaje..."></textarea>
+            </div>
+
             <div class="row" style="margin-top: 10px">
-                <button class="btn primary" id="btnReadChat">POST /linkedin/read-chat</button>
-                <button class="btn primary" id="btnSendConnection">POST /linkedin/send-connection</button>
                 <button class="btn" id="btnCopyJson">Copiar JSON</button>
                 <button class="btn danger" id="btnClear">Limpiar</button>
             </div>
@@ -358,6 +358,37 @@
             <div style="margin-top: 10px">
                 <pre id="out">{}</pre>
             </div>
+            <div class="mutedline"></div>
+
+            <div class="title" style="margin-top: 0">
+                <span>Warm Up · Watch New Messages</span>
+                <span class="pill"><span class="dot" id="warmDot"></span><span id="warmStatus">WarmUp:
+                        idle</span></span>
+            </div>
+
+            <div>
+                <label>linkedinUrl (perfil)</label>
+                <input id="warmLinkedinUrl" placeholder="https://www.linkedin.com/in/..." />
+                <div class="subtle" style="margin-top: 6px">
+                    Se abre una tab nueva y se monitorea si aparece un mensaje distinto a <code>lastMessageStr</code>.
+                </div>
+            </div>
+
+            <div style="margin-top: 10px">
+                <label>lastMessageStr (último mensaje conocido)</label>
+                <textarea id="warmLastMessageStr" placeholder="Pegá acá el último mensaje que viste..."></textarea>
+            </div>
+
+            <div class="row" style="margin-top: 10px">
+                <button class="btn primary" id="btnStartWarmUp">POST /linkedin/start-warm-up</button>
+                <button class="btn" id="btnCopyWarmUpBody">Copiar JSON (WarmUp)</button>
+            </div>
+
+            <div class="subtle" style="margin-top: 10px">
+                Nota: si tu DTO usa <code>profileUrl</code> en vez de <code>linkedinUrl</code>, cambiá el nombre en el
+                body del fetch.
+            </div>
+
 
             <div class="mutedline"></div>
 
@@ -385,7 +416,7 @@
             </div>
 
             <div class="subtle" style="margin-top: 10px">
-                El stream sirve para loguearte manualmente en LinkedIn y después probar <code>read-chat</code>.
+                El stream sirve para loguearte manualmente y ver qué está haciendo el bot.
             </div>
         </div>
     </div>
@@ -408,13 +439,31 @@
         const httpStatus = $("httpStatus");
         const lastFrame = $("lastFrame");
 
-
         let socket = null;
         let lastImageTs = 0;
 
         // FIX: bloquear scroll del body mientras el stream esté "en foco"
         let streamFocused = false;
         let prevBodyOverflow = "";
+
+        const warmDot = $("warmDot");
+        const warmStatus = $("warmStatus");
+
+        function setWarmState(state, extra) {
+            if (state === "ok") {
+                warmDot.className = "dot good";
+                warmStatus.textContent = "WarmUp: ok" + (extra ? ` (${extra})` : "");
+            } else if (state === "error") {
+                warmDot.className = "dot bad";
+                warmStatus.textContent = "WarmUp: error" + (extra ? ` (${extra})` : "");
+            } else if (state === "running") {
+                warmDot.className = "dot";
+                warmStatus.textContent = "WarmUp: running" + (extra ? ` (${extra})` : "");
+            } else {
+                warmDot.className = "dot";
+                warmStatus.textContent = "WarmUp: idle";
+            }
+        }
 
         function lockPageScroll(on) {
             if (on) {
@@ -437,17 +486,14 @@
             return new Date().toLocaleTimeString();
         }
 
+        function safeJson(v) {
+            try { return JSON.stringify(v, null, 2); }
+            catch { return String(v); }
+        }
+
         function appendLog(msg, obj) {
             const line = `[${now()}] ${msg}` + (obj ? `\n${safeJson(obj)}\n` : "\n");
             logEl.textContent = (line + logEl.textContent).slice(0, 12000);
-        }
-
-        function safeJson(v) {
-            try {
-                return JSON.stringify(v, null, 2);
-            } catch {
-                return String(v);
-            }
         }
 
         function setWsState(state, extra) {
@@ -476,18 +522,6 @@
             }
         }
 
-        function setConnHttpState(state, extra) {
-            if (state === "ok") {
-                connDot.className = "dot good";
-                connStatus.textContent = "HTTP: ok" + (extra ? ` (${extra})` : "");
-            } else if (state === "error") {
-                connDot.className = "dot bad";
-                connStatus.textContent = "HTTP: error" + (extra ? ` (${extra})` : "");
-            } else {
-                connDot.className = "dot";
-                connStatus.textContent = "HTTP: idle";
-            }
-        }
         function getConfig() {
             const baseUrlRaw = $("baseUrl").value.trim() || "http://localhost:3001";
             const apiPrefixRaw = $("apiPrefix").value.trim() || "/api/zion";
@@ -507,22 +541,39 @@
             return { baseUrl, apiPrefix, sessionId, fps, vpW, vpH };
         }
 
-        async function fetchJson(url, opts) {
-            const res = await fetch(url, {
-                ...opts,
-                headers: {
-                    "Content-Type": "application/json",
-                    ...(opts && opts.headers ? opts.headers : {}),
-                },
+        async function fetchJson(url, opts, timeoutMs = 120000) {
+            const ctrl = new AbortController();
+            const t = setTimeout(() => ctrl.abort(), timeoutMs);
+
+            let res;
+            try {
+                res = await fetch(url, {
+                    mode: "cors",
+                    signal: ctrl.signal,
+                    ...opts,
+                    headers: {
+                        "Content-Type": "application/json",
+                        ...(opts && opts.headers ? opts.headers : {}),
+                    },
+                });
+            } finally {
+                clearTimeout(t);
+            }
+
+            const ct = res.headers.get("content-type") || "";
+            const text = await res.text();
+
+            appendLog("HTTP response meta", {
+                url,
+                status: res.status,
+                ok: res.ok,
+                contentType: ct,
+                preview: text?.slice(0, 500),
             });
 
-            const text = await res.text();
             let data = null;
-            try {
-                data = text ? JSON.parse(text) : null;
-            } catch {
-                data = { raw: text };
-            }
+            try { data = text ? JSON.parse(text) : null; }
+            catch { data = { raw: text }; }
 
             if (!res.ok) {
                 const err = new Error(`HTTP ${res.status}`);
@@ -539,9 +590,7 @@
             const { baseUrl, apiPrefix, sessionId, fps } = getConfig();
 
             if (socket) {
-                try {
-                    socket.disconnect();
-                } catch { }
+                try { socket.disconnect(); } catch { }
                 socket = null;
             }
 
@@ -587,9 +636,7 @@
 
         function disconnectSocket() {
             if (!socket) return;
-            try {
-                socket.disconnect();
-            } catch { }
+            try { socket.disconnect(); } catch { }
             socket = null;
             setWsState("disconnected");
             appendLog("Socket manual disconnect");
@@ -601,7 +648,6 @@
                 return;
             }
             socket.emit("input", ev, (ack) => {
-                // log leve para no spamear
                 if (ev.type === "cmd" || ev.type === "click") appendLog("ACK input", ack);
             });
         }
@@ -628,7 +674,6 @@
             return { x: Math.max(0, Math.min(vpW, x)), y: Math.max(0, Math.min(vpH, y)) };
         }
 
-        // FIX: focus real + bloquear scroll body mientras está enfocado
         overlayEl.addEventListener("focus", () => setStreamFocus(true));
         overlayEl.addEventListener("blur", () => {
             flushTyping();
@@ -636,7 +681,6 @@
         });
 
         overlayEl.addEventListener("pointerdown", (e) => {
-            // focus sin "saltar" el scroll
             overlayEl.focus({ preventScroll: true });
             setStreamFocus(true);
 
@@ -647,57 +691,35 @@
         overlayEl.addEventListener("pointerup", (e) => {
             const { x, y } = rectToRemoteXY(e.clientX, e.clientY);
             emitInput({ type: "up", x, y, button: "left" });
-            // "click" explícito ayuda a tener consistencia
             emitInput({ type: "click", x, y, button: "left", clickCount: 1 });
         });
 
-        overlayEl.addEventListener(
-            "wheel",
-            (e) => {
-                // FIX: evita scroll del navegador (page) mientras scrolleás el stream
-                e.preventDefault();
-                e.stopPropagation();
-                emitInput({ type: "wheel", dx: e.deltaX, dy: e.deltaY });
-            },
-            { passive: false }
-        );
-
-        overlayEl.addEventListener("contextmenu", (e) => {
+        overlayEl.addEventListener("wheel", (e) => {
             e.preventDefault();
-        });
+            e.stopPropagation();
+            emitInput({ type: "wheel", dx: e.deltaX, dy: e.deltaY });
+        }, { passive: false });
+
+        overlayEl.addEventListener("contextmenu", (e) => e.preventDefault());
 
         overlayEl.addEventListener("keydown", (e) => {
-            // Evita que el browser haga scroll / shortcuts locales
             e.preventDefault();
             e.stopPropagation();
 
             const key = e.key;
 
-            // Escape: salir del focus del stream (y liberar scroll)
             if (key === "Escape") {
                 flushTyping();
-                try {
-                    overlayEl.blur();
-                } catch { }
+                try { overlayEl.blur(); } catch { }
                 setStreamFocus(false);
                 emitInput({ type: "press", key: "Escape" });
                 return;
             }
 
-            // teclas especiales -> press
             const special = [
-                "Enter",
-                "Backspace",
-                "Tab",
-                "ArrowUp",
-                "ArrowDown",
-                "ArrowLeft",
-                "ArrowRight",
-                "PageUp",
-                "PageDown",
-                "Home",
-                "End",
-                "Delete",
+                "Enter", "Backspace", "Tab",
+                "ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight",
+                "PageUp", "PageDown", "Home", "End", "Delete",
             ];
             if (special.includes(key)) {
                 flushTyping();
@@ -705,7 +727,6 @@
                 return;
             }
 
-            // Ctrl/Meta/Alt combos -> press
             if (e.ctrlKey || e.metaKey || e.altKey) {
                 flushTyping();
                 const mods = [];
@@ -717,7 +738,6 @@
                 return;
             }
 
-            // texto normal -> buffer -> type
             if (key && key.length === 1) {
                 typingBuf += key;
                 clearTimeout(typingTimer);
@@ -725,14 +745,11 @@
             }
         });
 
-        // FIX: click afuera del viewer => liberar focus/scroll
         document.addEventListener("pointerdown", (e) => {
             if (!streamFocused) return;
             const inside = viewerEl.contains(e.target);
             if (!inside) {
-                try {
-                    overlayEl.blur();
-                } catch { }
+                try { overlayEl.blur(); } catch { }
                 setStreamFocus(false);
             }
         });
@@ -763,89 +780,101 @@
             }
         }
 
-        async function postReadChat() {
-            const { baseUrl, apiPrefix, sessionId } = getConfig();
-            const profileUrl = $("profileUrl").value.trim();
-            const limit = Number($("limit").value || 30);
-            const threadHintRaw = $("threadHint").value.trim();
+        function buildWarmUpBody() {
+            const { sessionId } = getConfig();
+            const linkedinUrl = $("warmLinkedinUrl").value.trim();
+            const lastMessageStr = $("warmLastMessageStr").value || "";
 
-            const url = `${baseUrl}${apiPrefix}/linkedin/read-chat`;
+            // 🔁 Si tu backend usa "profileUrl" en vez de "linkedinUrl", cambiá acá:
+            // return { sessionId, profileUrl: linkedinUrl, lastMessageStr: lastMessageStr.trim() };
+
+            return {
+                sessionId,
+                linkedinUrl,
+                lastMessageStr: lastMessageStr.trim(),
+            };
+        }
+
+        async function postStartWarmUp() {
+            const { baseUrl, apiPrefix } = getConfig();
+            const url = `${baseUrl}${apiPrefix}/linkedin/start-warm-up`;
+
+            const body = buildWarmUpBody();
+
+            if (!body.linkedinUrl) {
+                setWarmState("error", "linkedinUrl requerido");
+                outEl.textContent = safeJson({ error: "linkedinUrl requerido" });
+                return;
+            }
+
+            // lastMessageStr puede venir vacío si querés arrancar “desde cero”
+            setWarmState("running", "starting...");
+            setHttpState("ok", "start-warm-up...");
+
+            appendLog("POST /linkedin/start-warm-up", {
+                url,
+                body: { ...body, lastMessageStr: `(len=${(body.lastMessageStr || "").length})` },
+            });
+
+            try {
+                // ⏱️ Le doy más margen por si abrir tab + cargar chat tarda
+                const data = await fetchJson(url, {
+                    method: "POST",
+                    body: JSON.stringify(body),
+                }, 10 * 60 * 1000); // 10 min
+
+                setWarmState("ok", "started");
+                setHttpState("ok", "warm-up ok");
+                outEl.textContent = safeJson(data);
+                appendLog("start-warm-up response", data);
+            } catch (e) {
+                setWarmState("error", e.message);
+                setHttpState("error", e.message);
+                outEl.textContent = safeJson({ error: e.message, payload: e.payload || null });
+                appendLog("start-warm-up error", { message: e.message, payload: e.payload || null });
+            }
+        }
+
+        async function postSendSalesNavMessage() {
+            const { baseUrl, apiPrefix, sessionId } = getConfig();
+            const profileUrl = $("snProfileUrl").value.trim();
+            const message = $("snMessage").value;
+            const subject = $("snSubject").value.trim();
+
+            const url = `${baseUrl}${apiPrefix}/linkedin/send-salesnav-message`;
 
             if (!profileUrl) {
                 setHttpState("error", "profileUrl requerido");
                 outEl.textContent = safeJson({ error: "profileUrl requerido" });
                 return;
             }
+            if (!message || !message.trim()) {
+                setHttpState("error", "message requerido");
+                outEl.textContent = safeJson({ error: "message requerido" });
+                return;
+            }
 
-            setHttpState("ok", "read-chat...");
-            appendLog("POST /linkedin/read-chat", {
-                url,
-                sessionId,
-                profileUrl,
-                limit,
-                threadHint: threadHintRaw || null,
-            });
+            const body = { sessionId, profileUrl, message: message.trim() };
+            if (subject) body.subject = subject;
 
-            const body = {
-                sessionId,
-                profileUrl,
-                limit: Number.isFinite(limit) ? limit : 30,
-            };
-            if (threadHintRaw) body.threadHint = threadHintRaw;
+            setHttpState("ok", "send-salesnav-message...");
+            appendLog("POST /linkedin/send-salesnav-message", { url, body: { ...body, message: `(len=${body.message.length})` } });
 
             try {
                 const data = await fetchJson(url, {
                     method: "POST",
                     body: JSON.stringify(body),
                 });
-                setHttpState("ok", "read-chat ok");
+
+                setHttpState("ok", "send ok");
                 outEl.textContent = safeJson(data);
-                appendLog("read-chat response", data);
+                appendLog("send-salesnav-message response", data);
             } catch (e) {
                 setHttpState("error", e.message);
                 outEl.textContent = safeJson({ error: e.message, payload: e.payload || null });
-                appendLog("read-chat error", { message: e.message, payload: e.payload || null });
+                appendLog("send-salesnav-message error", { message: e.message, payload: e.payload || null });
             }
         }
-  async function postSendConnection() {
-  const { baseUrl, apiPrefix, sessionId } = getConfig();
-
-  // ✅ reuse the existing input
-  const profileUrl = $("profileUrl").value.trim();
-  const noteRaw = $("connNote").value;
-
-  const url = `${baseUrl}${apiPrefix}/linkedin/send-connection`;
-
-  if (!profileUrl) {
-    setHttpState("error", "profileUrl requerido");
-    outEl.textContent = safeJson({ error: "profileUrl requerido" });
-    return;
-  }
-
-  const body = { sessionId, profileUrl };
-  // ✅ Only include note if non-empty to truly test “without note”
-  if (noteRaw && noteRaw.trim()) body.note = noteRaw.trim();
-
-  setHttpState("ok", "send-connection...");
-  appendLog("POST /linkedin/send-connection", { url, body });
-
-  try {
-    const data = await fetchJson(url, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-
-    setHttpState("ok", "send-connection ok");
-    outEl.textContent = safeJson(data);
-    appendLog("send-connection response", data);
-  } catch (e) {
-    setHttpState("error", e.message);
-    outEl.textContent = safeJson({ error: e.message, payload: e.payload || null });
-    appendLog("send-connection error", { message: e.message, payload: e.payload || null });
-  }
-}
-
-
 
         function cmdReload() {
             emitInput({ type: "cmd", command: "reload" });
@@ -858,6 +887,17 @@
         // ---------------------------
         // Wire UI
         // ---------------------------
+        $("btnStartWarmUp").addEventListener("click", () => postStartWarmUp());
+
+        $("btnCopyWarmUpBody").addEventListener("click", async () => {
+            try {
+                const body = buildWarmUpBody();
+                await navigator.clipboard.writeText(JSON.stringify(body, null, 2));
+                appendLog("WarmUp JSON copiado al clipboard", { keys: Object.keys(body) });
+            } catch (e) {
+                appendLog("No pude copiar WarmUp JSON", { error: String(e) });
+            }
+        });
         $("btnConnect").addEventListener("click", () => connectSocket());
         $("btnDisconnect").addEventListener("click", () => disconnectSocket());
 
@@ -865,10 +905,7 @@
         $("btnReload").addEventListener("click", () => cmdReload());
         $("btnListTabs").addEventListener("click", () => cmdListTabs());
 
-        $("btnReadChat").addEventListener("click", () => postReadChat());
-        $("btnSendConnection").addEventListener("click", () => postSendConnection());
-
-
+        $("btnSendSalesNavMessage").addEventListener("click", () => postSendSalesNavMessage());
 
         $("btnClear").addEventListener("click", () => {
             outEl.textContent = "{}";
@@ -883,67 +920,22 @@
                 appendLog("No pude copiar JSON", { error: String(e) });
             }
         });
-        async function fetchJson(url, opts) {
-            const ctrl = new AbortController();
-            const t = setTimeout(() => ctrl.abort(), 120000); // 2 min timeout
 
-            let res;
-            try {
-                res = await fetch(url, {
-                    mode: "cors",
-                    signal: ctrl.signal,
-                    ...opts,
-                    headers: {
-                        "Content-Type": "application/json",
-                        ...(opts && opts.headers ? opts.headers : {}),
-                    },
-                });
-            } finally {
-                clearTimeout(t);
-            }
-
-            const ct = res.headers.get("content-type") || "";
-            const text = await res.text();
-
-            appendLog("HTTP response meta", {
-                url,
-                status: res.status,
-                ok: res.ok,
-                contentType: ct,
-                preview: text?.slice(0, 500),
-            });
-
-            let data = null;
-            try {
-                data = text ? JSON.parse(text) : null;
-            } catch {
-                data = { raw: text };
-            }
-
-            if (!res.ok) {
-                const err = new Error(`HTTP ${res.status}`);
-                err.payload = data;
-                throw err;
-            }
-            return data;
-        }
-
-
-        // Defaults: baseUrl = current origin si estás sirviendo desde el backend,
-        // si no, queda placeholder.
+        // Defaults
         (function initDefaults() {
             const origin = window.location.origin;
-            // Si estás en file:// no sirve. Live server suele ser localhost:5500.
             if (origin && origin.startsWith("http")) {
                 $("baseUrl").value = "http://localhost:3001";
             } else {
                 $("baseUrl").value = "http://localhost:3001";
             }
             $("apiPrefix").value = "/api/zion";
-            appendLog("UI listo. No hay storage ni polling.");
             setWsState("disconnected");
             setHttpState("idle");
+            setWarmState("idle");
             setStreamFocus(false);
+
+            appendLog("UI listo. Acciones: open + send-salesnav-message. Sin storage ni polling.");
         })();
     </script>
 </body>
