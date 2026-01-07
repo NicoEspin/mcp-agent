@@ -166,14 +166,28 @@ export class LinkedinController {
   }
 
   // -------------------
-  // check-connection (POST)  <-- NO verification (según regla)
+  // check-connection (POST)
   // -------------------
   @Post('check-connection')
   async checkConnection(@Body() dto: CheckConnectionDto): Promise<any> {
     const sessionId = dto.sessionId ?? 'default';
-    return this.withSessionLock(sessionId, () =>
-      this.linkedin.checkConnection(sessionId, dto.profileUrl),
-    );
+    
+    return this.withSessionLock(sessionId, async () => {
+      const actionResult = await this.linkedin.checkConnection(
+        sessionId,
+        dto.profileUrl,
+      );
+
+      const verification = await this.verifier.verifyAfterAction({
+        sessionId,
+        taskId: dto.taskId,
+        action: 'send_connection',
+        profileUrl: dto.profileUrl,
+        actionResult,
+      });
+
+      return { ...actionResult, verification };
+    });
   }
 
   // -------------------

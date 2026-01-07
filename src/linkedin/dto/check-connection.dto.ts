@@ -10,4 +10,9 @@ export class CheckConnectionDto {
   @IsString()
   @IsUrl()
   profileUrl: string;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  taskId?: string;
 }
