@@ -2,6 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PlaywrightService } from '../../browser/playwright.service';
 import { buildEnsureOnUrlSnippet } from '../utils/navigation-snippets';
 import { createHash, randomUUID } from 'crypto';
+import * as https from 'https';
+import * as http from 'http';
 
 type SessionId = string;
 
@@ -101,6 +103,111 @@ export class LinkedinWarmUpService {
       .slice(0, 10);
     return `warmup_${h}`;
   }
+  private phoenixWebhookUrl() {
+    // ✅ Opción 1: URL completa (override)
+    const full = process.env.PHOENIX_LINKEDIN_MESSAGE_WEBHOOK_URL;
+    if (full && /^https?:\/\//i.test(full)) return full;
+
+    // ✅ Opción 2: base + path
+    const base = process.env.PHOENIX_BASE_URL; // ej: https://api.andeshire.com
+    if (!base) return null;
+
+    return `${base.replace(/\/+$/, '')}/api/v1/phoenix/linkedin/message/webhook`;
+  }
+
+  private async postJson(
+    urlStr: string,
+    body: any,
+    extraHeaders: Record<string, string> = {},
+    timeoutMs = 10_000,
+  ) {
+    const url = new URL(urlStr);
+    const data = JSON.stringify(body ?? {});
+    const isHttps = url.protocol === 'https:';
+    const lib = isHttps ? https : http;
+
+    const headers: Record<string, any> = {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(data),
+      ...extraHeaders,
+    };
+
+    return await new Promise<{ status: number; body: string }>(
+      (resolve, reject) => {
+        const req = lib.request(
+          {
+            method: 'POST',
+            hostname: url.hostname,
+            port: url.port ? Number(url.port) : isHttps ? 443 : 80,
+            path: `${url.pathname}${url.search}`,
+            headers,
+          },
+          (res) => {
+            let chunks = '';
+            res.on('data', (d) => (chunks += d?.toString?.() ?? ''));
+            res.on('end', () => {
+              const status = res.statusCode ?? 0;
+              if (status >= 200 && status < 300)
+                return resolve({ status, body: chunks });
+              return reject(
+                new Error(
+                  `webhook_non_2xx status=${status} body=${chunks.slice(0, 800)}`,
+                ),
+              );
+            });
+          },
+        );
+
+        req.setTimeout(timeoutMs, () =>
+          req.destroy(new Error('webhook_timeout')),
+        );
+        req.on('error', reject);
+        req.write(data);
+        req.end();
+      },
+    );
+  }
+
+  private async postPhoenixNewMessageWebhook(args: {
+    watcherId: string;
+    sessionId: string;
+    profileUrl: string;
+    cid: string; // correlation id del intento
+    payload: WarmupPayload;
+  }) {
+    const url = this.phoenixWebhookUrl();
+    if (!url) {
+      this.logger.warn(
+        `[watcher][${args.watcherId}][${args.cid}] PHOENIX_BASE_URL/PHOENIX_LINKEDIN_MESSAGE_WEBHOOK_URL not set -> skipping webhook`,
+      );
+      return { ok: false, skipped: true, reason: 'missing_phoenix_url' };
+    }
+
+    const token = process.env.PHOENIX_WEBHOOK_TOKEN;
+
+    // 👇 evitar mandar trace gigante (si lo querés, sacá esto)
+    const { trace, ...payloadNoTrace } = (args.payload as any) ?? {};
+
+    const body = {
+      type: 'linkedin.new_message',
+      watcherId: args.watcherId,
+      sessionId: args.sessionId,
+      profileUrl: args.profileUrl,
+      correlationId: args.cid,
+      occurredAt: args.payload?.finishedAt ?? new Date().toISOString(),
+      data: payloadNoTrace,
+      // accesos directos útiles para Phoenix
+      latestMessage: args.payload?.latestMessage ?? null,
+      latestMessageStr: args.payload?.latestMessageStr ?? null,
+      lastMessageStr: args.payload?.lastMessageStr ?? null,
+    };
+
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const res = await this.postJson(url, body, headers, 10_000);
+    return { ok: true, status: res.status };
+  }
 
   private sleep(ms: number, signal?: AbortSignal) {
     return new Promise<void>((resolve, reject) => {
@@ -150,26 +257,26 @@ export class LinkedinWarmUpService {
   // -----------------------------
   // ✅ Playwright code generator (con trace + correlationId)
   // -----------------------------
-private buildStartWarmUpCode(opts: {
-  profileUrl: string;
-  lastMessageStr: string;
-  intervalMs: number;
-  maxChecks: number;
-  closeOnFinish: boolean;
-  correlationId: string;
-  armFromCurrent: boolean;
-}) {
-  const {
-    profileUrl,
-    lastMessageStr,
-    intervalMs,
-    maxChecks,
-    closeOnFinish,
-    correlationId,
-    armFromCurrent,
-  } = opts;
+  private buildStartWarmUpCode(opts: {
+    profileUrl: string;
+    lastMessageStr: string;
+    intervalMs: number;
+    maxChecks: number;
+    closeOnFinish: boolean;
+    correlationId: string;
+    armFromCurrent: boolean;
+  }) {
+    const {
+      profileUrl,
+      lastMessageStr,
+      intervalMs,
+      maxChecks,
+      closeOnFinish,
+      correlationId,
+      armFromCurrent,
+    } = opts;
 
-  return `
+    return `
 async (page) => {
   ${buildEnsureOnUrlSnippet()}
 
@@ -767,7 +874,7 @@ async (page) => {
   }
 }
 `;
-}
+  }
 
   // -----------------------------
   // ✅ startWarmUp (misma API, más logs + correlationId)
@@ -1056,6 +1163,39 @@ async (page) => {
             `[watcher][${watcherId}][${cid}] ✅ NEW MESSAGE detected checks=${payload.checks} latestPreview="${preview}"`,
           );
 
+          // ✅ POST a Phoenix webhook cuando hay mensaje
+          try {
+            const r = await this.postPhoenixNewMessageWebhook({
+              watcherId,
+              sessionId,
+              profileUrl,
+              cid,
+              payload,
+            });
+
+            if ((r as any)?.ok) {
+              this.logger.log(
+                `[watcher][${watcherId}][${cid}] webhook delivered status=${
+                  (r as any)?.status ?? 'n/a'
+                }`,
+              );
+            } else {
+              this.logger.warn(
+                `[watcher][${watcherId}][${cid}] webhook skipped reason=${
+                  (r as any)?.reason ?? 'unknown'
+                }`,
+              );
+            }
+          } catch (whErr: any) {
+            // 🔒 no rompas el watcher por webhook
+            this.logger.warn(
+              `[watcher][${watcherId}][${cid}] webhook failed: ${
+                whErr?.message ?? whErr
+              }`,
+            );
+          }
+
+          // callback opcional
           try {
             onNewMessage?.({
               ...(payload as any),
@@ -1065,7 +1205,9 @@ async (page) => {
             });
           } catch (cbErr: any) {
             this.logger.warn(
-              `[watcher][${watcherId}][${cid}] onNewMessage callback failed: ${cbErr?.message ?? cbErr}`,
+              `[watcher][${watcherId}][${cid}] onNewMessage callback failed: ${
+                cbErr?.message ?? cbErr
+              }`,
             );
           }
 
@@ -1089,7 +1231,9 @@ async (page) => {
         }
 
         this.logger.debug(
-          `[watcher][${watcherId}][${cid}] heartbeat: no new message (reason=${payload.reason ?? 'n/a'}) continuing...`,
+          `[watcher][${watcherId}][${cid}] heartbeat: no new message (reason=${
+            payload.reason ?? 'n/a'
+          }) continuing...`,
         );
       } catch (e: any) {
         this.logger.warn(
