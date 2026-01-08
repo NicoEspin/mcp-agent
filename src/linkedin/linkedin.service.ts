@@ -309,4 +309,33 @@ export class LinkedinService {
       closeOnFinish ?? true,
     );
   }
+
+  // -------------------------------
+  // warmup watcher controls
+  // -------------------------------
+  startWarmUpWatcher(
+    sessionId: string,
+    profileUrl: string,
+    lastMessageStr: string,
+    opts: any = {},
+  ) {
+    return this.warmup.startWarmUpWatcher(
+      sessionId,
+      profileUrl,
+      lastMessageStr,
+      opts,
+    );
+  }
+
+  stopWarmUpWatcher(watcherId: string) {
+    return this.warmup.stopWarmUpWatcher(watcherId);
+  }
+
+  stopWarmUpBySession(sessionId: string, profileUrl?: string) {
+    return this.warmup.stopWarmUpBySession(sessionId, profileUrl);
+  }
+
+  listWarmUpWatchers() {
+    return this.warmup.listWarmUpWatchers();
+  }
 }

@@ -82,6 +82,9 @@ type WatcherState = {
   attempt: number;
   abort: AbortController;
   promise: Promise<void>;
+
+  currentCid?: string | null;
+  currentAttemptStartedAt?: number | null;
 };
 
 @Injectable()
@@ -96,21 +99,53 @@ export class LinkedinWarmUpService {
   // -----------------------------
   // Helpers
   // -----------------------------
-  private makeWatcherId(sessionId: string, profileUrl: string) {
+  private normalizeProfileUrlForId(u: string) {
+    try {
+      const url = new URL(u);
+      url.hash = '';
+      url.search = '';
+
+      // remove trailing slashes in pathname
+      url.pathname = (url.pathname || '').replace(/\/+$/, '');
+
+      // LinkedIn suele ser case-insensitive en host
+      url.hostname = url.hostname.toLowerCase();
+
+      return `${url.origin}${url.pathname}`;
+    } catch {
+      return (u ?? '').toString().trim().replace(/\/+$/, '');
+    }
+  }
+
+  private makeLegacyWatcherId(sessionId: string, profileUrl: string) {
+    // el comportamiento anterior (raw string) por compat
     const h = createHash('sha1')
       .update(`${sessionId}::${profileUrl}`)
       .digest('hex')
       .slice(0, 10);
     return `warmup_${h}`;
   }
+
+  private makeWatcherId(sessionId: string, profileUrl: string) {
+    // ✅ nuevo: normaliza para que / final, query, hash no rompan el stop
+    const normUrl = this.normalizeProfileUrlForId(profileUrl);
+
+    const h = createHash('sha1')
+      .update(`${sessionId}::${normUrl}`)
+      .digest('hex')
+      .slice(0, 10);
+
+    return `warmup_${h}`;
+  }
+
   private phoenixWebhookUrl() {
     // ✅ Opción 1: URL completa (override)
     const full = process.env.PHOENIX_LINKEDIN_MESSAGE_WEBHOOK_URL;
     if (full && /^https?:\/\//i.test(full)) return full;
 
-    // ✅ Opción 2: base + path
-    const base = process.env.PHOENIX_BASE_URL; // ej: https://api.andeshire.com
-    if (!base) return null;
+    // ✅ Opción 2: base + path (con fallback)
+    const base =
+      process.env.PHOENIX_BASE_URL?.trim() || 'https://andeshire.com/';
 
     return `${base.replace(/\/+$/, '')}/api/v1/phoenix/linkedin/message/webhook`;
   }
@@ -196,6 +231,7 @@ export class LinkedinWarmUpService {
       correlationId: args.cid,
       occurredAt: args.payload?.finishedAt ?? new Date().toISOString(),
       data: payloadNoTrace,
+
       // accesos directos útiles para Phoenix
       latestMessage: args.payload?.latestMessage ?? null,
       latestMessageStr: args.payload?.latestMessageStr ?? null,
@@ -328,7 +364,10 @@ async (page) => {
     // 0) Abrir NUEVA TAB
     warmPage = await page.context().newPage();
     page = warmPage;
-    await debug('New tab created');
+    try { page.__warmupCid = correlationId; } catch {}
+    try { page.__warmupStartedAt = Date.now(); } catch {}
+
+    await debug('New tab created', { warmupCid: correlationId });
 
     const getOpenThreadProfileHref = async () => {
       const candidates = [
@@ -1051,6 +1090,8 @@ async (page) => {
       attempt: 0,
       abort,
       promise: Promise.resolve(),
+      currentCid: null,
+      currentAttemptStartedAt: null,
     };
 
     state.promise = this.runWatcherLoop(state, opts).finally(() => {
@@ -1071,12 +1112,85 @@ async (page) => {
     const st = this.watchers.get(watcherId);
     if (!st) return { ok: false, error: 'watcher_not_found', watcherId };
 
-    if (!st.isRunning)
-      return { ok: true, watcherId, stopped: true, alreadyStopped: true };
+    const alreadyStopped = !st.isRunning;
 
-    st.abort.abort();
-    this.logger.warn(`[watcher][${watcherId}] stop requested`);
-    return { ok: true, watcherId, stopped: true, alreadyStopped: false };
+    if (!alreadyStopped) {
+      try {
+        st.abort.abort();
+      } catch {}
+      this.logger.warn(`[watcher][${watcherId}] stop requested`);
+    }
+
+    return {
+      ok: true,
+      watcherId,
+      stopped: true,
+      alreadyStopped,
+      sessionId: st.sessionId,
+      profileUrl: st.profileUrl,
+      attempt: st.attempt,
+      startedAt: st.startedAt,
+      isRunning: st.isRunning,
+    };
+  }
+  stopWarmUpBySession(sessionId: string, profileUrl?: string) {
+    const sid = sessionId ?? 'default';
+
+    // Stop específico por profile
+    if (profileUrl) {
+      const watcherId = this.makeWatcherId(sid, profileUrl);
+      const legacyId = this.makeLegacyWatcherId(sid, profileUrl);
+
+      // primero el nuevo
+      const r1 = this.stopWarmUpWatcher(watcherId);
+      if (r1?.ok)
+        return {
+          ...r1,
+          resolvedBy: 'normalized_id',
+          watcherIdTried: watcherId,
+        };
+
+      // fallback legacy (por si había watchers creados antes del cambio)
+      const r2 = this.stopWarmUpWatcher(legacyId);
+      if (r2?.ok)
+        return { ...r2, resolvedBy: 'legacy_id', watcherIdTried: legacyId };
+
+      return {
+        ok: false,
+        error: 'watcher_not_found_for_profile',
+        sessionId: sid,
+        profileUrl,
+        watcherIdTried: watcherId,
+        legacyIdTried: legacyId,
+      };
+    }
+
+    // Stop masivo por sesión
+    const all = Array.from(this.watchers.values()).filter(
+      (w) => w.sessionId === sid,
+    );
+
+    if (!all.length) {
+      return { ok: false, error: 'no_watchers_for_session', sessionId: sid };
+    }
+
+    const results = all.map((w) => this.stopWarmUpWatcher(w.watcherId));
+    const stoppedNow = results.filter(
+      (r: any) => r?.ok && r?.alreadyStopped === false,
+    ).length;
+    const alreadyStopped = results.filter(
+      (r: any) => r?.ok && r?.alreadyStopped === true,
+    ).length;
+
+    return {
+      ok: true,
+      sessionId: sid,
+      mode: 'stop_all_for_session',
+      totalWatchers: results.length,
+      stoppedNow,
+      alreadyStopped,
+      results,
+    };
   }
 
   listWarmUpWatchers() {
@@ -1087,6 +1201,8 @@ async (page) => {
       isRunning: w.isRunning,
       attempt: w.attempt,
       startedAt: w.startedAt,
+      currentCid: w.currentCid ?? null,
+      currentAttemptStartedAt: w.currentAttemptStartedAt ?? null,
       lastMessageStrPreview: this.previewText(w.lastMessageStr, 120),
     }));
   }
@@ -1097,7 +1213,7 @@ async (page) => {
   private async runWatcherLoop(state: WatcherState, opts: WatcherOptions) {
     const {
       intervalSeconds = 60,
-      chunkMinutes = 15,
+      chunkMinutes = 1,
       closeOnFinish = true,
       backoffSecondsOnError = 10,
       logBrowserTrace = false,
@@ -1117,6 +1233,11 @@ async (page) => {
 
       const cid = `${watcherId}_${state.attempt}_${randomUUID().slice(0, 8)}`;
 
+      // ✅ tracking para observabilidad
+      state.currentCid = cid;
+      state.currentAttemptStartedAt = Date.now();
+      this.watchers.set(watcherId, state);
+
       this.logger.log(
         `[watcher][${watcherId}][${cid}] attempt=${state.attempt} start lastPreview="${this.previewText(
           state.lastMessageStr,
@@ -1125,7 +1246,7 @@ async (page) => {
       );
 
       try {
-        // ✅ armFromCurrent=true para evitar tu caso de "already-new-at-start"
+        // ✅ armFromCurrent=true para evitar "already-new-at-start"
         const res = await this.startWarmUp(
           sessionId,
           profileUrl,
@@ -1211,9 +1332,15 @@ async (page) => {
             );
           }
 
+          // avanzar baseline
           if (payload?.latestMessageStr) {
             state.lastMessageStr = payload.latestMessageStr;
           }
+
+          // ✅ limpiar tracking de intento
+          state.currentCid = null;
+          state.currentAttemptStartedAt = null;
+          this.watchers.set(watcherId, state);
 
           if (continueAfterNewMessage) {
             this.logger.log(
@@ -1235,16 +1362,32 @@ async (page) => {
             payload.reason ?? 'n/a'
           }) continuing...`,
         );
+
+        // ✅ limpiar tracking de intento (terminó chunk)
+        state.currentCid = null;
+        state.currentAttemptStartedAt = null;
+        this.watchers.set(watcherId, state);
       } catch (e: any) {
         this.logger.warn(
           `[watcher][${watcherId}][${cid}] attempt crashed: ${e?.message ?? e}`,
         );
+
+        // ✅ limpiar tracking de intento
+        state.currentCid = null;
+        state.currentAttemptStartedAt = null;
+        this.watchers.set(watcherId, state);
+
         await this.sleep(
           backoffSecondsOnError * 1000,
           state.abort.signal,
         ).catch(() => {});
       }
     }
+
+    // ✅ limpieza final
+    state.currentCid = null;
+    state.currentAttemptStartedAt = null;
+    this.watchers.set(watcherId, state);
 
     this.logger.log(
       `[watcher][${watcherId}] loop end (aborted=${state.abort.signal.aborted})`,

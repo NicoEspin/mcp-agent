@@ -14,6 +14,7 @@ import { ReadSalesNavChatDto } from './dto/read-salesnav-chat.dto';
 import { LinkedinSalesNavigatorChatService } from './services/linkedin-sales-navigator-chat.service';
 import { CheckSalesNavConnectionDto } from './dto/check-salesnav-connection.dto';
 import { StartWarmUpDto } from './dto/start-warm-up.dto';
+import { StopWarmUpDto } from './dto/stop-warm-up.dto';
 
 @Controller('linkedin')
 export class LinkedinController {
@@ -172,7 +173,7 @@ export class LinkedinController {
   @Post('check-connection')
   async checkConnection(@Body() dto: CheckConnectionDto): Promise<any> {
     const sessionId = dto.sessionId ?? 'default';
-    
+
     return this.withSessionLock(sessionId, async () => {
       const actionResult = await this.linkedin.checkConnection(
         sessionId,
@@ -471,5 +472,42 @@ export class LinkedinController {
     });
 
     return { ...actionResult, verification };
+  }
+
+  @Post('stop-warm-up')
+  async stopWarmUp(@Body() dto: StopWarmUpDto) {
+    const sessionId = dto.sessionId ?? 'default';
+
+    // 1) stop por watcherId (más exacto)
+    if (dto.watcherId) {
+      return this.linkedin.stopWarmUpWatcher(dto.watcherId);
+    }
+
+    // 2) stop por sessionId + profileUrl/linkedinUrl
+    const profileUrl = dto.linkedinUrl ?? dto.profileUrl;
+    const stopAll = dto.stopAllForSession ?? !profileUrl;
+
+    // stop all para la sesión
+    if (!profileUrl && stopAll) {
+      return this.linkedin.stopWarmUpBySession(sessionId);
+    }
+
+    // stop puntual por perfil
+    if (profileUrl) {
+      return this.linkedin.stopWarmUpBySession(sessionId, profileUrl);
+    }
+
+    // error
+    return {
+      ok: false,
+      error: 'missing_watcherId_or_profileUrl',
+      sessionId,
+      hint: 'Send watcherId OR (sessionId + profileUrl/linkedinUrl). Or send only sessionId to stop all watchers.',
+    };
+  }
+
+  @Get('warmup-watchers')
+  async listWarmUpWatchers() {
+    return { ok: true, watchers: this.linkedin.listWarmUpWatchers() };
   }
 }
