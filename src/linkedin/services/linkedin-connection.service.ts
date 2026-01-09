@@ -724,8 +724,6 @@ En "signals" incluí las palabras/frases EXACTAS que viste y usaste para decidir
         'User authenticated, building Playwright execution code',
       );
 
-      // Direct Playwright execution
-
       // 🔴 IMPORTANTE: el código es una FUNCIÓN async (page) => { ... }
       const code = `
 async (page) => {
@@ -736,6 +734,143 @@ async (page) => {
 
   const debug = (msg) => {
     console.log('[send-connection]', msg, 'url=', page.url());
+  };
+
+  const sleep = (ms) => page.waitForTimeout(ms);
+
+  const waitUntilEnabled = async (loc, timeoutMs = 12000) => {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+      const vis = await loc.isVisible().catch(() => false);
+      if (!vis) {
+        await sleep(250);
+        continue;
+      }
+      const en = await loc.isEnabled().catch(() => false);
+      if (en) return true;
+      await sleep(250);
+    }
+    return false;
+  };
+
+  const robustClick = async (loc, label) => {
+    await debug('Intentando click: ' + label);
+    await loc.scrollIntoViewIfNeeded().catch(() => {});
+    await sleep(600 + Math.random() * 700);
+    await loc.hover().catch(() => {});
+    await sleep(500 + Math.random() * 700);
+
+    // 1) normal click
+    try {
+      await loc.click({ timeout: 5000 });
+      return true;
+    } catch {}
+
+    // 2) force click
+    try {
+      await loc.click({ timeout: 5000, force: true });
+      return true;
+    } catch {}
+
+    // 3) DOM click fallback
+    try {
+      await loc.evaluate((el) => el && (el).click && (el).click());
+      return true;
+    } catch {}
+
+    return false;
+  };
+
+  const findFirstClickableInScopes = async (scopes, selectors, roleNameRegexes) => {
+    // A) getByRole (muy estable)
+    if (roleNameRegexes && roleNameRegexes.length) {
+      for (const rx of roleNameRegexes) {
+        for (const scope of scopes) {
+          try {
+            const byRole = scope.getByRole('button', { name: rx }).first();
+            const okEnabled = await waitUntilEnabled(byRole, 9000);
+            if (okEnabled) return { loc: byRole, how: 'getByRole(' + String(rx) + ')' };
+          } catch {}
+        }
+      }
+    }
+
+    // B) selector fallbacks
+    for (const sel of selectors) {
+      for (const scope of scopes) {
+        try {
+          const candidate = scope.locator(sel).first();
+          const okEnabled = await waitUntilEnabled(candidate, 7000);
+          if (okEnabled) return { loc: candidate, how: sel };
+        } catch {}
+      }
+    }
+
+    return { loc: null, how: '' };
+  };
+
+  // ✅ NUEVO: aceptar solicitud entrante (cuando el otro ya nos envió invitación)
+  const tryAcceptIncomingRequest = async (fromWhere) => {
+    await debug('Chequeando solicitud entrante (Accept/Aceptar). from=' + fromWhere);
+
+    const scopes = [page.locator('main').last(), page]; // main preferido + fallback global
+
+    // ⚠️ Priorizamos aria-label que contenga "request to connect" / "solicitud ... conexión"
+    const acceptSelectors = [
+      // aria-label EN
+      'button[aria-label*="request to connect" i][aria-label*="accept" i]',
+      'button[aria-label*="request to connect" i]:has-text("Accept")',
+      'button[aria-label*="request to connect" i] span.artdeco-button__text:has-text("Accept")',
+      'button[aria-label*="connect" i][aria-label*="accept" i]',
+
+      // aria-label ES/PT (variantes comunes)
+      'button[aria-label*="solicitud" i][aria-label*="acept" i]',
+      'button[aria-label*="conex" i][aria-label*="acept" i]',
+      'button[aria-label*="convite" i][aria-label*="aceit" i]', // PT: "aceitar" / "convite"
+      'button[aria-label*="conex" i]:has-text("Aceptar")',
+      'button[aria-label*="solicitud" i]:has-text("Aceptar")',
+
+      // clases típicas
+      'button.artdeco-button--primary[aria-label*="accept" i]',
+      'button.artdeco-button--primary[aria-label*="acept" i]',
+      'button.artdeco-button--primary:has(span.artdeco-button__text:has-text("Accept"))',
+      'button.artdeco-button--primary:has(span.artdeco-button__text:has-text("Aceptar"))',
+    ];
+
+    const roleRegexes = [
+      /accept .*request to connect/i,
+      /accept .*connect/i,
+      /aceptar .*solicitud.*conex/i,
+      /aceitar .*convite/i,
+    ];
+
+    const found = await findFirstClickableInScopes(scopes, acceptSelectors, roleRegexes);
+
+    if (!found.loc) {
+      await debug('No se detectó botón Accept/Aceptar (solicitud entrante).');
+      return { ok: false, clicked: false, how: '' };
+    }
+
+    await debug('Solicitud entrante detectada. Click en Accept/Aceptar via: ' + found.how);
+
+    const clicked = await robustClick(found.loc, 'Accept/Aceptar (' + found.how + ')');
+    if (!clicked) {
+      await debug('Falló click en Accept/Aceptar (solicitud entrante).');
+      return { ok: false, clicked: false, how: found.how };
+    }
+
+    // Espera corta para que LinkedIn actualice UI
+    await sleep(1500 + Math.random() * 1200);
+
+    // Si el botón desaparece, mejor; si no, igual seguimos
+    const stillThere = await found.loc.isVisible().catch(() => false);
+    if (stillThere) {
+      await debug('Accept/Aceptar aún visible, esperando un poco más...');
+      await sleep(1500 + Math.random() * 1500);
+    }
+
+    await debug('Solicitud aceptada (o UI en transición).');
+    return { ok: true, clicked: true, how: found.how };
   };
 
   // Function to handle note modal with human-like behavior
@@ -861,75 +996,6 @@ async (page) => {
 
       const hasNote = !!(note && note.trim());
 
-      const waitUntilEnabled = async (loc, timeoutMs = 12000) => {
-        const t0 = Date.now();
-        while (Date.now() - t0 < timeoutMs) {
-          const vis = await loc.isVisible().catch(() => false);
-          if (!vis) {
-            await page.waitForTimeout(250);
-            continue;
-          }
-          const en = await loc.isEnabled().catch(() => false);
-          if (en) return true;
-          await page.waitForTimeout(250);
-        }
-        return false;
-      };
-
-      const robustClick = async (loc, label) => {
-        await debug('Intentando click: ' + label);
-        await loc.scrollIntoViewIfNeeded().catch(() => {});
-        await page.waitForTimeout(600 + Math.random() * 700);
-        await loc.hover().catch(() => {});
-        await page.waitForTimeout(500 + Math.random() * 700);
-
-        // 1) normal click
-        try {
-          await loc.click({ timeout: 5000 });
-          return true;
-        } catch {}
-
-        // 2) force click
-        try {
-          await loc.click({ timeout: 5000, force: true });
-          return true;
-        } catch {}
-
-        // 3) DOM click fallback
-        try {
-          await loc.evaluate((el) => el && (el).click && (el).click());
-          return true;
-        } catch {}
-
-        return false;
-      };
-
-      const findFirstClickableInScopes = async (scopes, selectors, roleNameRegex) => {
-        // A) getByRole is usually the most stable
-        if (roleNameRegex) {
-          for (const scope of scopes) {
-            try {
-              const byRole = scope.getByRole('button', { name: roleNameRegex }).first();
-              const okEnabled = await waitUntilEnabled(byRole, 9000);
-              if (okEnabled) return { loc: byRole, how: 'getByRole(' + roleNameRegex + ')' };
-            } catch {}
-          }
-        }
-
-        // B) selector fallbacks
-        for (const sel of selectors) {
-          for (const scope of scopes) {
-            try {
-              const candidate = scope.locator(sel).first();
-              const okEnabled = await waitUntilEnabled(candidate, 7000);
-              if (okEnabled) return { loc: candidate, how: sel };
-            } catch {}
-          }
-        }
-
-        return { loc: null, how: '' };
-      };
-
       // We try inside modal first, then page as fallback (some UIs mount footer buttons outside the dialog node)
       const scopes = [modal, page];
 
@@ -938,31 +1004,27 @@ async (page) => {
         await debug('Caso SIN nota: buscando botón "Enviar sin nota"');
 
         const sendWithoutNoteSelectors = [
-          // exact / aria-label
           'button[aria-label="Enviar sin nota"]',
           'button[aria-label*="enviar sin nota" i]',
           'button[aria-label*="sin nota" i]',
-
-          // text-based
           'button:has-text("Enviar sin nota")',
           'button:has(span.artdeco-button__text:has-text("Enviar sin nota"))',
           'button.artdeco-button--primary:has-text("Enviar sin nota")',
           'button.artdeco-button--primary:has(span.artdeco-button__text:has-text("Enviar sin nota"))',
 
-          // English fallbacks (in case account/UI is EN)
+          // English fallbacks
           'button[aria-label*="send without" i]',
           'button:has-text("Send without a note")',
           'button:has-text("Send without note")',
           'button:has-text("Send without a message")',
 
-          // generic but safer-ish (last resort inside this branch)
           'button[data-control-name*="send" i]',
         ];
 
         const found = await findFirstClickableInScopes(
           scopes,
           sendWithoutNoteSelectors,
-          /enviar sin nota/i
+          [/enviar sin nota/i]
         );
 
         if (found.loc) {
@@ -987,19 +1049,16 @@ async (page) => {
       await debug('Buscando botón de envío estándar ("Enviar"/"Send")');
 
       const sendButtonSelectors = [
-        // Prefer exact-ish "Enviar" first
         'button[aria-label="Enviar"]',
         'button[aria-label*="send invite" i]',
         'button[data-control-name="send_invite"]',
 
-        // Text-based
         'button:has(span.artdeco-button__text:text("Enviar"))',
         'button:has-text("Enviar")',
         'button:has-text("Send")',
         'button:has-text("Send invitation")',
         'button:has-text("Enviar invitación")',
 
-        // Generic fallbacks (keep them late)
         'button[type="submit"]',
         'button.artdeco-button--primary',
         'button[aria-label*="Send" i]',
@@ -1007,31 +1066,21 @@ async (page) => {
         '.artdeco-button--primary:has-text("Enviar")'
       ];
 
-      let sendButton = null;
-      let sendHow = '';
-
       const foundStandard = await findFirstClickableInScopes(
         scopes,
         sendButtonSelectors,
-        /^(enviar|send)$/i
+        [/^(enviar|send)$/i]
       );
 
       if (foundStandard.loc) {
-        sendButton = foundStandard.loc;
-        sendHow = foundStandard.how;
-      }
-
-      if (sendButton) {
-        await debug('Botón de envío encontrado: ' + sendHow);
+        await debug('Botón de envío encontrado: ' + foundStandard.how);
 
         await debug('Preparando envío de conexión');
-
         await page.waitForTimeout(8000 + Math.random() * 7000);
 
-        const clicked = await robustClick(sendButton, 'Send standard (' + sendHow + ')');
+        const clicked = await robustClick(foundStandard.loc, 'Send standard (' + foundStandard.how + ')');
         if (clicked) {
           await page.waitForTimeout(7000 + Math.random() * 5000);
-
           await debug('Conexión enviada con modal completado');
           return true;
         }
@@ -1040,7 +1089,6 @@ async (page) => {
         return false;
       } else {
         await debug('No se encontró botón de envío válido');
-        // Try to close modal and proceed
         const closeButtons = modal.locator('[aria-label*="dismiss" i], [aria-label*="close" i], button:has-text("×")');
         const closeBtn = closeButtons.first();
         const closeVisible = await closeBtn.isVisible().catch(() => false);
@@ -1065,7 +1113,7 @@ async (page) => {
   const nav = await ensureOnUrl(profileUrl, {
     waitUntil: 'domcontentloaded',
     timeout: 20000,
-    settleMs: 10000, // equivalente a tu waitForTimeout(10000)
+    settleMs: 10000,
     allowSubpaths: false,
   });
   await debug('ensureOnUrl -> ' + JSON.stringify(nav));
@@ -1080,32 +1128,56 @@ async (page) => {
   const main = mainCount > 1 ? mains.last() : mains.first();
   await debug('Main elegido, count=' + mainCount);
 
-  // 3) FIRST: Try to find direct "Conectar" button with multiple selectors
-  await debug('Buscando botón "Conectar" directo');
+  // ✅ 3) NUEVO PRIMER PASO: si hay solicitud entrante, ACEPTAR en vez de enviar
+  // (este es el caso donde aparece "Ignore" en el menú y el botón primario fuera es "Accept")
+  const incoming = await tryAcceptIncomingRequest('pre-check');
+  if (incoming.clicked) {
+    return {
+      ok: true,
+      viaAcceptIncoming: true,
+      selector: incoming.how,
+      noteLength: note.length,
+      noteAdded: false
+    };
+  }
+
+  // 4) FIRST: Try to find direct "Conectar/Connect" button with multiple selectors
+  await debug('Buscando botón "Conectar/Connect" directo');
 
   const directConnectSelectors = [
-    // By aria-label containing "conectar"
+    // By aria-label containing "conectar"/"connect"
     'button[aria-label*="conectar" i]',
-    'button[aria-label*="Invita" i][aria-label*="conectar" i]',
-    
+    'button[aria-label*="connect" i]',
+    'button[aria-label*="invita" i][aria-label*="conectar" i]',
+    'button[aria-label*="invite" i][aria-label*="connect" i]',
+
     // By class and text content
     'button.artdeco-button--primary:has-text("Conectar")',
+    'button.artdeco-button--primary:has-text("Connect")',
     'button.artdeco-button--2.artdeco-button--primary:has-text("Conectar")',
-    
+    'button.artdeco-button--2.artdeco-button--primary:has-text("Connect")',
+
     // By SVG icon and text
     'button:has(svg[data-test-icon="connect-small"]) >> text="Conectar"',
+    'button:has(svg[data-test-icon="connect-small"]) >> text="Connect"',
     'button:has(use[href="#connect-small"]) >> text="Conectar"',
-    
+    'button:has(use[href="#connect-small"]) >> text="Connect"',
+
     // By button text with various classes
     'button:has(span.artdeco-button__text >> text="Conectar")',
+    'button:has(span.artdeco-button__text >> text="Connect")',
     'button.artdeco-button:has(span >> text="Conectar")',
-    
+    'button.artdeco-button:has(span >> text="Connect")',
+
     // By ID pattern (ember IDs)
     'button[id^="ember"]:has-text("Conectar")',
-    
+    'button[id^="ember"]:has-text("Connect")',
+
     // Generic fallbacks
     'button >> text="Conectar"',
-    'button:text("Conectar")'
+    'button >> text="Connect"',
+    'button:text("Conectar")',
+    'button:text("Connect")'
   ];
 
   let directConnectBtn = null;
@@ -1116,9 +1188,12 @@ async (page) => {
       const btn = main.locator(selector).first();
       const isVisible = await btn.isVisible().catch(() => false);
       if (isVisible) {
+        const isEnabled = await btn.isEnabled().catch(() => false);
+        if (!isEnabled) continue;
+
         directConnectBtn = btn;
         usedSelector = selector;
-        await debug('Encontrado botón Conectar directo con selector: ' + selector);
+        await debug('Encontrado botón Conectar/Connect directo con selector: ' + selector);
         break;
       }
     } catch {}
@@ -1126,9 +1201,22 @@ async (page) => {
 
   if (directConnectBtn) {
     try {
-      await debug('Click en botón "Conectar" directo');
+      await debug('Click en botón "Conectar/Connect" directo');
       await directConnectBtn.click({ timeout: 6000, force: true });
       await page.waitForTimeout(2000);
+
+      // ✅ Si al abrirse algo aparece el menú y tiene "Ignore", preferimos ACEPTAR (caso invitación entrante)
+      // (fallback: por si la UI renderiza algo raro / cambia idioma)
+      const acceptAfterClick = await tryAcceptIncomingRequest('after-direct-click');
+      if (acceptAfterClick.clicked) {
+        return {
+          ok: true,
+          viaAcceptIncoming: true,
+          selector: acceptAfterClick.how,
+          noteLength: note.length,
+          noteAdded: false
+        };
+      }
 
       const noteHandled = await handleNoteModal(page, note, debug);
 
@@ -1146,7 +1234,7 @@ async (page) => {
     }
   }
 
-  // 4) FALLBACK: Use "Más acciones" dropdown approach
+  // 5) FALLBACK: Use "Más acciones" dropdown approach
   await debug('No se encontró botón directo o falló click, usando dropdown "Más acciones"');
 
   let moreBtn = main
@@ -1178,27 +1266,74 @@ async (page) => {
 
   // Log de items del dropdown para debug
   try {
-    const items = dropdownInner.locator('div.artdeco-dropdown__item[role="button"]');
+    const items = dropdownInner.locator('div.artdeco-dropdown__item[role="button"], [role="menuitem"]');
     const labels = await items.allTextContents();
     debug('Items en dropdown: ' + JSON.stringify(labels));
   } catch (e) {
     debug('No se pudieron loguear los items del dropdown: ' + (e?.message || e));
   }
 
-  // 6) Buscar el item "Conectar" dentro del dropdown interno por TEXTO VISIBLE
-  const connectButton = dropdownInner
-    .locator('div.artdeco-dropdown__item[role="button"]')
-    .filter({ hasText: /conectar/i })
+  // ✅ NUEVO fallback por MENÚ: si vemos "Ignore" (solicitud entrante), NO enviamos invitación: aceptamos.
+  // (sirve si LinkedIn mete el "Ignore" en algún menú y el botón Accept está fuera, como en tu HTML)
+  try {
+    const ignoreItem = dropdownInner
+      .locator([
+        'div.artdeco-dropdown__item[role="button"][aria-label*="ignore" i][aria-label*="request to connect" i]',
+        'div.artdeco-dropdown__item[role="button"]:has-text("Ignore")',
+        '[role="menuitem"]:has-text("Ignore")',
+        'div.artdeco-dropdown__item[role="button"][aria-label*="ignorar" i]',
+        'div.artdeco-dropdown__item[role="button"]:has-text("Ignorar")',
+      ].join(', '))
+      .first();
+
+    const ignoreVisible = await ignoreItem.isVisible().catch(() => false);
+    if (ignoreVisible) {
+      await debug('Detectado item "Ignore/Ignorar" en menú -> intentando aceptar solicitud entrante fuera del menú');
+      await page.keyboard.press('Escape').catch(() => {});
+      await page.waitForTimeout(400);
+
+      const incomingFromMenu = await tryAcceptIncomingRequest('from-menu-ignore');
+      if (incomingFromMenu.clicked) {
+        return {
+          ok: true,
+          viaAcceptIncoming: true,
+          selector: incomingFromMenu.how,
+          fromMenuIgnore: true,
+          noteLength: note.length,
+          noteAdded: false
+        };
+      }
+    }
+  } catch (e) {
+    await debug('Error en chequeo de Ignore: ' + (e?.message || e));
+  }
+
+  // 6) Buscar el item "Conectar/Connect" dentro del dropdown interno por TEXTO VISIBLE
+  const connectItem = dropdownInner
+    .locator('div.artdeco-dropdown__item[role="button"], [role="menuitem"]')
+    .filter({ hasText: /(conectar|connect|invitar|invite)/i })
     .first();
 
-  await connectButton.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {
-    throw new Error('No se encontró el item "Conectar" dentro del dropdown de Más acciones.');
+  await connectItem.waitFor({ state: 'visible', timeout: 8000 }).catch(() => {
+    throw new Error('No se encontró el item "Conectar/Connect" dentro del dropdown de Más acciones.');
   });
 
-  await debug('Click en "Conectar" dentro del dropdown');
-  await connectButton.click({ timeout: 6000, force: true });
+  await debug('Click en "Conectar/Connect" dentro del dropdown');
+  await connectItem.click({ timeout: 6000, force: true });
 
   await page.waitForTimeout(2000);
+
+  // ✅ Por si LinkedIn cambia a estado de invitación entrante después del click (raro, pero safe)
+  const acceptAfterPopover = await tryAcceptIncomingRequest('after-popover-connect');
+  if (acceptAfterPopover.clicked) {
+    return {
+      ok: true,
+      viaAcceptIncoming: true,
+      selector: acceptAfterPopover.how,
+      noteLength: note.length,
+      noteAdded: false
+    };
+  }
 
   const noteHandled = await handleNoteModal(page, note, debug);
 
@@ -1258,21 +1393,27 @@ async (page) => {
         }
 
         // Track which method was used
-        const connectionMethod = result?.viaDirect
-          ? 'botón directo "Conectar"'
-          : 'dropdown "Más acciones"';
+        let connectionMethod = 'dropdown "Más acciones"';
+        if (result?.viaAcceptIncoming) {
+          connectionMethod = 'aceptar solicitud entrante ("Accept/Aceptar")';
+        } else if (result?.viaDirect) {
+          connectionMethod = 'botón directo "Conectar/Connect"';
+        } else if (result?.viaPopover) {
+          connectionMethod = 'dropdown "Más acciones"';
+        }
+
         const selectorInfo = result?.selector
           ? ` (selector: ${result.selector})`
           : '';
 
         verboseResult.executionDetails.methodsAttempted.push(connectionMethod);
         verboseResult.executionDetails.steps.push(
-          `Connection sent via: ${connectionMethod}${selectorInfo}`,
+          `Connection action completed via: ${connectionMethod}${selectorInfo}`,
         );
 
-        if (result?.viaDirect) {
+        if (result?.selector) {
           verboseResult.executionDetails.playwrightDetails.selectors.push(
-            result.selector || 'unknown',
+            result.selector,
           );
         }
 
@@ -1282,7 +1423,10 @@ async (page) => {
           );
         }
 
-        verboseResult.note = `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
+        verboseResult.note = result?.viaAcceptIncoming
+          ? `Solicitud entrante aceptada vía ${connectionMethod}${selectorInfo}.`
+          : `Solicitud de conexión enviada vía ${connectionMethod}${selectorInfo}.`;
+
         verboseResult.toolResult = result;
 
         return verboseResult;

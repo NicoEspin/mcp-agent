@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sales Navigator Debug (Send Message)</title>
+    <title>Sales Navigator Debug (Send + Read Chat)</title>
     <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
     <style>
         :root {
@@ -237,6 +237,67 @@
             margin: 12px 0;
         }
 
+        /* ✅ Chat preview (rendered) */
+        .chat {
+            background: rgba(0, 0, 0, 0.25);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 10px;
+            max-height: 280px;
+            overflow: auto;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .msg {
+            max-width: 92%;
+            border: 1px solid rgba(255, 255, 255, 0.10);
+            border-radius: 14px;
+            padding: 8px 10px;
+            background: rgba(255, 255, 255, 0.06);
+        }
+
+        .msg.me {
+            align-self: flex-end;
+            background: rgba(139, 92, 246, 0.14);
+            border-color: rgba(139, 92, 246, 0.35);
+        }
+
+        .msg.other {
+            align-self: flex-start;
+            background: rgba(59, 130, 246, 0.10);
+            border-color: rgba(59, 130, 246, 0.28);
+        }
+
+        .msg .meta {
+            font-size: 11px;
+            color: var(--muted);
+            margin-bottom: 4px;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .msg .text {
+            font-size: 12px;
+            white-space: pre-wrap;
+            line-height: 1.35;
+            color: rgba(255, 255, 255, 0.88);
+        }
+
+        .kbadge {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 4px 8px;
+            border-radius: 999px;
+            border: 1px solid rgba(255, 255, 255, 0.12);
+            background: rgba(0, 0, 0, 0.22);
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.78);
+        }
+
         @media (max-width: 980px) {
             .wrap {
                 grid-template-columns: 1fr;
@@ -313,7 +374,8 @@
             </div>
 
             <div class="subtle" style="margin-top: 10px">
-                Usá el stream para loguearte manualmente. Luego probá <code>send-salesnav-message</code>.
+                Usá el stream para loguearte manualmente. Luego probá <code>read-salesnav-chat</code> (o
+                <code>send-salesnav-message</code>).
             </div>
 
             <div class="mutedline"></div>
@@ -351,13 +413,76 @@
             </div>
 
             <div class="row" style="margin-top: 10px">
-                <button class="btn" id="btnCopyJson">Copiar JSON</button>
+                <button class="btn" id="btnCopySendSalesNavBody">Copiar JSON (Send)</button>
+                <button class="btn" id="btnCopyJson">Copiar JSON (Output)</button>
                 <button class="btn danger" id="btnClear">Limpiar</button>
             </div>
 
+            <div class="mutedline"></div>
+
+            <!-- ✅ NEW: SalesNav Read Chat -->
+            <div class="title" style="margin-top: 0">
+                <span>Sales Navigator · Read Chat</span>
+                <span class="pill"><span class="dot" id="snReadDot"></span><span id="snReadStatus">ReadChat:
+                        idle</span></span>
+            </div>
+
+            <div>
+                <label>profileUrl</label>
+                <input id="snReadProfileUrl" placeholder="https://www.linkedin.com/in/..." />
+                <div class="subtle" style="margin-top: 6px">
+                    Este endpoint abre Sales Navigator, click en “Message”, carga historial y extrae mensajes (hora +
+                    rol).
+                </div>
+            </div>
+
+            <div class="grid" style="margin-top: 10px">
+                <div>
+                    <label>limit (1-200)</label>
+                    <input id="snReadLimit" type="number" min="1" max="200" value="30" />
+                </div>
+                <div>
+                    <label>threadHint (opcional)</label>
+                    <input id="snReadThreadHint" placeholder="Ej: nombre o pista del thread" />
+                </div>
+            </div>
+
+            <div class="grid" style="margin-top: 10px">
+                <div>
+                    <label>taskId (opcional UUID v4)</label>
+                    <input id="snReadTaskId" placeholder="xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx" />
+                </div>
+                <div>
+                    <label>Acción</label>
+                    <button class="btn primary" id="btnReadSalesNavChat" style="width:100%">
+                        POST /linkedin/read-salesnav-chat
+                    </button>
+                </div>
+            </div>
+
+            <div class="row" style="margin-top: 10px">
+                <button class="btn" id="btnCopyReadSalesNavBody">Copiar JSON (Read)</button>
+                <button class="btn" id="btnSyncProfileUrl">Copiar profileUrl desde Send → Read</button>
+            </div>
+
+            <div style="margin-top: 10px">
+                <label>Chat preview (rendered)</label>
+                <div id="chatPreview" class="chat">
+                    <div class="subtle">Todavía no hay resultados. Ejecutá <code>read-salesnav-chat</code>.</div>
+                </div>
+            </div>
+
+            <div class="mutedline"></div>
+
+            <!-- Output -->
+            <div class="title" style="margin-top: 0">
+                <span>Output (última respuesta)</span>
+                <span class="subtle">raw JSON</span>
+            </div>
             <div style="margin-top: 10px">
                 <pre id="out">{}</pre>
             </div>
+
             <div class="mutedline"></div>
 
             <div class="title" style="margin-top: 0">
@@ -388,7 +513,6 @@
                 Nota: si tu DTO usa <code>profileUrl</code> en vez de <code>linkedinUrl</code>, cambiá el nombre en el
                 body del fetch.
             </div>
-
 
             <div class="mutedline"></div>
 
@@ -439,6 +563,13 @@
         const httpStatus = $("httpStatus");
         const lastFrame = $("lastFrame");
 
+        const warmDot = $("warmDot");
+        const warmStatus = $("warmStatus");
+
+        const snReadDot = $("snReadDot");
+        const snReadStatus = $("snReadStatus");
+        const chatPreviewEl = $("chatPreview");
+
         let socket = null;
         let lastImageTs = 0;
 
@@ -446,23 +577,18 @@
         let streamFocused = false;
         let prevBodyOverflow = "";
 
-        const warmDot = $("warmDot");
-        const warmStatus = $("warmStatus");
+        function now() {
+            return new Date().toLocaleTimeString();
+        }
 
-        function setWarmState(state, extra) {
-            if (state === "ok") {
-                warmDot.className = "dot good";
-                warmStatus.textContent = "WarmUp: ok" + (extra ? ` (${extra})` : "");
-            } else if (state === "error") {
-                warmDot.className = "dot bad";
-                warmStatus.textContent = "WarmUp: error" + (extra ? ` (${extra})` : "");
-            } else if (state === "running") {
-                warmDot.className = "dot";
-                warmStatus.textContent = "WarmUp: running" + (extra ? ` (${extra})` : "");
-            } else {
-                warmDot.className = "dot";
-                warmStatus.textContent = "WarmUp: idle";
-            }
+        function safeJson(v) {
+            try { return JSON.stringify(v, null, 2); }
+            catch { return String(v); }
+        }
+
+        function appendLog(msg, obj) {
+            const line = `[${now()}] ${msg}` + (obj ? `\n${safeJson(obj)}\n` : "\n");
+            logEl.textContent = (line + logEl.textContent).slice(0, 12000);
         }
 
         function lockPageScroll(on) {
@@ -480,20 +606,6 @@
             viewerEl.classList.toggle("focused", on);
             lockPageScroll(on);
             appendLog(on ? "Stream focus ON (scroll bloqueado)" : "Stream focus OFF (scroll liberado)");
-        }
-
-        function now() {
-            return new Date().toLocaleTimeString();
-        }
-
-        function safeJson(v) {
-            try { return JSON.stringify(v, null, 2); }
-            catch { return String(v); }
-        }
-
-        function appendLog(msg, obj) {
-            const line = `[${now()}] ${msg}` + (obj ? `\n${safeJson(obj)}\n` : "\n");
-            logEl.textContent = (line + logEl.textContent).slice(0, 12000);
         }
 
         function setWsState(state, extra) {
@@ -519,6 +631,38 @@
             } else {
                 httpDot.className = "dot";
                 httpStatus.textContent = "HTTP: idle";
+            }
+        }
+
+        function setWarmState(state, extra) {
+            if (state === "ok") {
+                warmDot.className = "dot good";
+                warmStatus.textContent = "WarmUp: ok" + (extra ? ` (${extra})` : "");
+            } else if (state === "error") {
+                warmDot.className = "dot bad";
+                warmStatus.textContent = "WarmUp: error" + (extra ? ` (${extra})` : "");
+            } else if (state === "running") {
+                warmDot.className = "dot";
+                warmStatus.textContent = "WarmUp: running" + (extra ? ` (${extra})` : "");
+            } else {
+                warmDot.className = "dot";
+                warmStatus.textContent = "WarmUp: idle";
+            }
+        }
+
+        function setSnReadState(state, extra) {
+            if (state === "ok") {
+                snReadDot.className = "dot good";
+                snReadStatus.textContent = "ReadChat: ok" + (extra ? ` (${extra})` : "");
+            } else if (state === "error") {
+                snReadDot.className = "dot bad";
+                snReadStatus.textContent = "ReadChat: error" + (extra ? ` (${extra})` : "");
+            } else if (state === "running") {
+                snReadDot.className = "dot";
+                snReadStatus.textContent = "ReadChat: running" + (extra ? ` (${extra})` : "");
+            } else {
+                snReadDot.className = "dot";
+                snReadStatus.textContent = "ReadChat: idle";
             }
         }
 
@@ -755,6 +899,113 @@
         });
 
         // ---------------------------
+        // Chat preview rendering (SalesNav read-chat)
+        // ---------------------------
+        function clearChatPreview(msg) {
+            chatPreviewEl.innerHTML = "";
+            const d = document.createElement("div");
+            d.className = "subtle";
+            d.textContent = msg || "Sin datos";
+            chatPreviewEl.appendChild(d);
+        }
+
+        function extractMessagesFromResponse(resp) {
+            const candidates = [
+                resp?.data?.messages,
+                resp?.data?.data?.messages,
+                resp?.toolResult?.messages,
+                resp?.toolResult?.data?.messages,
+                resp?.messages,
+            ];
+            for (const arr of candidates) {
+                if (Array.isArray(arr)) return arr;
+            }
+            return [];
+        }
+
+        function extractParticipantsFromResponse(resp) {
+            return (
+                resp?.data?.data?.participants ||
+                resp?.data?.participants ||
+                resp?.toolResult?.data?.participants ||
+                resp?.toolResult?.participants ||
+                null
+            );
+        }
+
+        function renderChatPreview(resp) {
+            const msgs = extractMessagesFromResponse(resp);
+            const participants = extractParticipantsFromResponse(resp);
+
+            chatPreviewEl.innerHTML = "";
+
+            // Header badges
+            const header = document.createElement("div");
+            header.style.display = "flex";
+            header.style.gap = "8px";
+            header.style.flexWrap = "wrap";
+            header.style.marginBottom = "4px";
+
+            const b1 = document.createElement("div");
+            b1.className = "kbadge";
+            b1.textContent = `Mensajes: ${msgs.length}`;
+            header.appendChild(b1);
+
+            if (participants?.me || participants?.other) {
+                const b2 = document.createElement("div");
+                b2.className = "kbadge";
+                b2.textContent = `Me: ${participants?.me || "?"} · Other: ${participants?.other || "?"}`;
+                header.appendChild(b2);
+            }
+
+            chatPreviewEl.appendChild(header);
+
+            if (!msgs.length) {
+                const empty = document.createElement("div");
+                empty.className = "subtle";
+                empty.textContent = "No se detectaron mensajes en el DOM (o el extractor devolvió 0).";
+                chatPreviewEl.appendChild(empty);
+                return;
+            }
+
+            for (const m of msgs) {
+                const role = (m?.role || "").toString().toLowerCase();
+                const isMe = role === "recruiter" || role === "you" || role === "me";
+
+                const item = document.createElement("div");
+                item.className = "msg " + (isMe ? "me" : "other");
+
+                const meta = document.createElement("div");
+                meta.className = "meta";
+
+                const who = document.createElement("span");
+                who.textContent = (isMe ? "You" : (m?.senderName || "Other"));
+                meta.appendChild(who);
+
+                const when = document.createElement("span");
+                const timePart = m?.time ? `⏱ ${m.time}` : "";
+                const dtPart = m?.datetime ? `🗓 ${m.datetime}` : "";
+                when.textContent = [timePart, dtPart].filter(Boolean).join(" · ") || "⏱ -";
+                meta.appendChild(when);
+
+                const strategy = document.createElement("span");
+                strategy.textContent = m?.extractionStrategy ? `⚙ ${m.extractionStrategy}` : "";
+                if (strategy.textContent) meta.appendChild(strategy);
+
+                const text = document.createElement("div");
+                text.className = "text";
+                text.textContent = (m?.text || "").toString();
+
+                item.appendChild(meta);
+                item.appendChild(text);
+                chatPreviewEl.appendChild(item);
+            }
+
+            // Auto-scroll to bottom
+            try { chatPreviewEl.scrollTop = chatPreviewEl.scrollHeight; } catch { }
+        }
+
+        // ---------------------------
         // HTTP Actions
         // ---------------------------
         async function postOpen() {
@@ -817,7 +1068,7 @@
             });
 
             try {
-                // ⏱️ Le doy más margen por si abrir tab + cargar chat tarda
+                // ⏱️ margen grande por tab + carga
                 const data = await fetchJson(url, {
                     method: "POST",
                     body: JSON.stringify(body),
@@ -835,30 +1086,39 @@
             }
         }
 
-        async function postSendSalesNavMessage() {
-            const { baseUrl, apiPrefix, sessionId } = getConfig();
+        function buildSendSalesNavBody() {
+            const { sessionId } = getConfig();
             const profileUrl = $("snProfileUrl").value.trim();
             const message = $("snMessage").value;
             const subject = $("snSubject").value.trim();
 
+            const body = { sessionId, profileUrl, message: (message || "").trim() };
+            if (subject) body.subject = subject;
+            return body;
+        }
+
+        async function postSendSalesNavMessage() {
+            const { baseUrl, apiPrefix } = getConfig();
             const url = `${baseUrl}${apiPrefix}/linkedin/send-salesnav-message`;
 
-            if (!profileUrl) {
+            const body = buildSendSalesNavBody();
+
+            if (!body.profileUrl) {
                 setHttpState("error", "profileUrl requerido");
                 outEl.textContent = safeJson({ error: "profileUrl requerido" });
                 return;
             }
-            if (!message || !message.trim()) {
+            if (!body.message || !body.message.trim()) {
                 setHttpState("error", "message requerido");
                 outEl.textContent = safeJson({ error: "message requerido" });
                 return;
             }
 
-            const body = { sessionId, profileUrl, message: message.trim() };
-            if (subject) body.subject = subject;
-
             setHttpState("ok", "send-salesnav-message...");
-            appendLog("POST /linkedin/send-salesnav-message", { url, body: { ...body, message: `(len=${body.message.length})` } });
+            appendLog("POST /linkedin/send-salesnav-message", {
+                url,
+                body: { ...body, message: `(len=${(body.message || "").length})` }
+            });
 
             try {
                 const data = await fetchJson(url, {
@@ -876,6 +1136,64 @@
             }
         }
 
+        function buildReadSalesNavBody() {
+            const { sessionId } = getConfig();
+            const profileUrl = $("snReadProfileUrl").value.trim();
+            const limitRaw = Number($("snReadLimit").value || 30);
+            const limit = Math.max(1, Math.min(200, isFinite(limitRaw) ? limitRaw : 30));
+            const threadHint = $("snReadThreadHint").value.trim();
+            const taskId = $("snReadTaskId").value.trim();
+
+            const body = { sessionId, profileUrl, limit };
+            if (threadHint) body.threadHint = threadHint;
+            if (taskId) body.taskId = taskId;
+            return body;
+        }
+
+        async function postReadSalesNavChat() {
+            const { baseUrl, apiPrefix } = getConfig();
+            const url = `${baseUrl}${apiPrefix}/linkedin/read-salesnav-chat`;
+
+            const body = buildReadSalesNavBody();
+
+            if (!body.profileUrl) {
+                setSnReadState("error", "profileUrl requerido");
+                outEl.textContent = safeJson({ error: "profileUrl requerido" });
+                clearChatPreview("Falta profileUrl para leer el chat.");
+                return;
+            }
+
+            setSnReadState("running", "reading...");
+            setHttpState("ok", "read-salesnav-chat...");
+
+            appendLog("POST /linkedin/read-salesnav-chat", { url, body });
+
+            try {
+                // ⏱️ darle margen por navegación + abrir overlay + scroll/extract
+                const data = await fetchJson(url, {
+                    method: "POST",
+                    body: JSON.stringify(body),
+                }, 6 * 60 * 1000); // 6 min
+
+                setSnReadState("ok", "done");
+                setHttpState("ok", "read ok");
+                outEl.textContent = safeJson(data);
+                appendLog("read-salesnav-chat response", data);
+
+                // Render preview
+                try { renderChatPreview(data); } catch (e) {
+                    appendLog("renderChatPreview error", { error: String(e) });
+                    clearChatPreview("No pude renderizar el chat preview (ver logs).");
+                }
+            } catch (e) {
+                setSnReadState("error", e.message);
+                setHttpState("error", e.message);
+                outEl.textContent = safeJson({ error: e.message, payload: e.payload || null });
+                appendLog("read-salesnav-chat error", { message: e.message, payload: e.payload || null });
+                clearChatPreview("Error leyendo el chat (ver Output/Logs).");
+            }
+        }
+
         function cmdReload() {
             emitInput({ type: "cmd", command: "reload" });
         }
@@ -887,6 +1205,16 @@
         // ---------------------------
         // Wire UI
         // ---------------------------
+        $("btnConnect").addEventListener("click", () => connectSocket());
+        $("btnDisconnect").addEventListener("click", () => disconnectSocket());
+
+        $("btnOpen").addEventListener("click", () => postOpen());
+        $("btnReload").addEventListener("click", () => cmdReload());
+        $("btnListTabs").addEventListener("click", () => cmdListTabs());
+
+        $("btnSendSalesNavMessage").addEventListener("click", () => postSendSalesNavMessage());
+        $("btnReadSalesNavChat").addEventListener("click", () => postReadSalesNavChat());
+
         $("btnStartWarmUp").addEventListener("click", () => postStartWarmUp());
 
         $("btnCopyWarmUpBody").addEventListener("click", async () => {
@@ -898,18 +1226,42 @@
                 appendLog("No pude copiar WarmUp JSON", { error: String(e) });
             }
         });
-        $("btnConnect").addEventListener("click", () => connectSocket());
-        $("btnDisconnect").addEventListener("click", () => disconnectSocket());
 
-        $("btnOpen").addEventListener("click", () => postOpen());
-        $("btnReload").addEventListener("click", () => cmdReload());
-        $("btnListTabs").addEventListener("click", () => cmdListTabs());
+        $("btnCopySendSalesNavBody").addEventListener("click", async () => {
+            try {
+                const body = buildSendSalesNavBody();
+                // no copiar el mensaje entero si querés: acá lo copiamos completo igual
+                await navigator.clipboard.writeText(JSON.stringify(body, null, 2));
+                appendLog("Send SalesNav JSON copiado al clipboard", { keys: Object.keys(body) });
+            } catch (e) {
+                appendLog("No pude copiar Send SalesNav JSON", { error: String(e) });
+            }
+        });
 
-        $("btnSendSalesNavMessage").addEventListener("click", () => postSendSalesNavMessage());
+        $("btnCopyReadSalesNavBody").addEventListener("click", async () => {
+            try {
+                const body = buildReadSalesNavBody();
+                await navigator.clipboard.writeText(JSON.stringify(body, null, 2));
+                appendLog("Read SalesNav JSON copiado al clipboard", { keys: Object.keys(body) });
+            } catch (e) {
+                appendLog("No pude copiar Read SalesNav JSON", { error: String(e) });
+            }
+        });
+
+        $("btnSyncProfileUrl").addEventListener("click", () => {
+            const v = $("snProfileUrl").value.trim();
+            if (v) {
+                $("snReadProfileUrl").value = v;
+                appendLog("ProfileUrl sync: Send → Read", { profileUrl: v });
+            } else {
+                appendLog("ProfileUrl sync: no hay valor en Send");
+            }
+        });
 
         $("btnClear").addEventListener("click", () => {
             outEl.textContent = "{}";
-            appendLog("Limpiar output");
+            clearChatPreview("Limpiado. Ejecutá read-salesnav-chat para ver mensajes.");
+            appendLog("Limpiar output + chat preview");
         });
 
         $("btnCopyJson").addEventListener("click", async () => {
@@ -923,19 +1275,17 @@
 
         // Defaults
         (function initDefaults() {
-            const origin = window.location.origin;
-            if (origin && origin.startsWith("http")) {
-                $("baseUrl").value = "http://localhost:3001";
-            } else {
-                $("baseUrl").value = "http://localhost:3001";
-            }
+            $("baseUrl").value = "http://localhost:3001";
             $("apiPrefix").value = "/api/zion";
+
             setWsState("disconnected");
             setHttpState("idle");
             setWarmState("idle");
+            setSnReadState("idle");
             setStreamFocus(false);
 
-            appendLog("UI listo. Acciones: open + send-salesnav-message. Sin storage ni polling.");
+            clearChatPreview("Todavía no hay resultados. Ejecutá read-salesnav-chat.");
+            appendLog("UI listo. Acciones: open + send-salesnav-message + read-salesnav-chat + warm-up. Sin storage.");
         })();
     </script>
 </body>
